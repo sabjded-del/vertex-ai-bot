@@ -1,0 +1,6 @@
+services:
+  - type: worker
+    name: vertex-ai-bot
+    env: python
+    buildCommand: ""
+    startCommand: "bash start.sh"

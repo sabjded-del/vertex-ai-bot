@@ -2,5 +2,6 @@ services:
   - type: worker
     name: vertex-ai-bot
     env: python
-    buildCommand: ""
+    runtime: python3.10
+    buildCommand: "pip install -r requirements.txt"
     startCommand: "bash start.sh"

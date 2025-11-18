@@ -5,8 +5,10 @@ from telegram import Bot
 from datetime import datetime
 import time
 
-TOKEN = "8404086668:AAF3C8QP_sAAaqgwQubQf1lhOFCEqkx8GSg"
-CHAT_ID = 5833369092
+import os
+
+TOKEN = os.getenv("TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
 
 bot = Bot(TOKEN)
 binance = ccxt.binance()

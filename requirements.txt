@@ -3,6 +3,5 @@ numpy
 pandas
 pandas_ta
 requests
-TA-Lib
 websocket-client
 imghdr-pure

@@ -7,24 +7,22 @@ from datetime import datetime, timezone
 from telegram import Bot
 
 # ==========================
-# إعداد الأساسيات
+# إعدادات أساسية
 # ==========================
 
 TOKEN = os.getenv("TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")  # الشات الأساسي لاستلام التقارير
+CHAT_ID = os.getenv("CHAT_ID")  # الشات الرئيسي
 
 if not TOKEN or not CHAT_ID:
     raise RuntimeError("❌ تأكد من ضبط TOKEN و CHAT_ID في إعدادات Render")
 
 bot = Bot(TOKEN)
 
-# تحليل السوق كل X ثانية (تقدر تزيد أو تنقص)
-ANALYSIS_INTERVAL = 60 * 15  # كل 15 دقيقة
-POLL_INTERVAL = 3            # فترة فحص أوامر التليجرام بالثواني
+ANALYSIS_INTERVAL = 60 * 15   # تحليل السوق كل 15 دقيقة
+POLL_INTERVAL = 3             # فحص أوامر التليجرام كل 3 ثواني
 
 # ==========================
-# العملات المدعومة (يمكنك التوسعة حتى 50 / 100)
-# مفتاح: رمز العملة في البوت   القيمة: ID في CoinGecko
+# العملات المدعومة (يمكن توسعتها حتى 50+)
 # ==========================
 
 COINS = {
@@ -53,22 +51,38 @@ COINS = {
     "ETH": "ethereum",
 }
 
-# عملتك الأساسية للخطة 12% (يمكن تغييرها)
-MAIN_COIN = "XVG"
-
-# ذاكرة داخلية بسيطة
-LAST_INFOS = {}       # آخر تحليل لكل عملة
-OPEN_TRADES = {}      # الصفقات المفتوحة لكل عملة {symbol: {"entry":..., "target":...}}
-OPPORTUNITY_MEMORY = []  # حفظ الفرص القوية
-LAST_ALERTS = {}      # لتقليل تكرار نفس التنبيه (symbol:type -> timestamp)
-
-# وضع Hybrid Auto Mode (تشغيل/إيقاف)
-HYBRID_AUTO = True
-
+MAIN_COIN = "XVG"   # عملتك الرئيسية لخطة 12%
 
 # ==========================
-# أدوات مساعدة
+# ذاكرة داخلية + رأس المال
 # ==========================
+
+LAST_INFOS = {}         # آخر تحليل لكل عملة
+OPEN_TRADES = {}        # صفقات مفتوحة لكل رمز
+OPPORTUNITY_MEMORY = [] # أفضل الفرص الأخيرة
+LAST_ALERTS = {}        # لمنع تكرار التنبيهات (symbol_type -> ts)
+
+HYBRID_AUTO = True      # وضع الهجين
+
+# محرك رأس المال الداخلي
+capital = {
+    "initial": 1000.0,     # رأس المال الابتدائي (تقديري)
+    "current": 1000.0,     # رأس المال المستخدم
+    "saved": 0.0,          # ادخار (نظري)
+    "realized_profit": 0.0,
+    "coins": {}            # لكل عملة: amount, avg_price, invested, profit
+}
+
+
+def ensure_coin_capital(symbol: str):
+    if symbol not in capital["coins"]:
+        capital["coins"][symbol] = {
+            "amount": 0.0,
+            "avg_price": 0.0,
+            "invested": 0.0,
+            "profit": 0.0
+        }
+
 
 def now_utc():
     return datetime.now(timezone.utc)
@@ -79,14 +93,10 @@ def now_utc_str():
 
 
 # ==========================
-# جلب البيانات من CoinGecko
+# جلب بيانات من CoinGecko
 # ==========================
 
 def fetch_ohlcv_coingecko(coin_id: str, days: int = 2, interval: str = "hourly") -> pd.DataFrame:
-    """
-    جلب بيانات من CoinGecko: الأسعار + الحجم
-    ونحوّلها إلى DataFrame.
-    """
     url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
     params = {
         "vs_currency": "usd",
@@ -113,10 +123,8 @@ def fetch_ohlcv_coingecko(coin_id: str, days: int = 2, interval: str = "hourly")
                        df_vol.sort_values("time"),
                        on="time")
 
-    # تقدير high/low بشكل مبسط
     df["high"] = df["close"].rolling(3, min_periods=1).max()
     df["low"] = df["close"].rolling(3, min_periods=1).min()
-
     return df
 
 
@@ -132,13 +140,10 @@ def rsi(series: pd.Series, period: int) -> pd.Series:
     delta = series.diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
-
     avg_gain = gain.rolling(period).mean()
     avg_loss = loss.rolling(period).mean()
-
     rs = avg_gain / (avg_loss.replace(0, np.nan))
-    rsi_val = 100 - (100 / (1 + rs))
-    return rsi_val
+    return 100 - (100 / (1 + rs))
 
 
 def bollinger(series: pd.Series, period: int = 20, stddev: float = 2.0):
@@ -151,29 +156,37 @@ def bollinger(series: pd.Series, period: int = 20, stddev: float = 2.0):
 
 def obv(close: pd.Series, volume: pd.Series) -> pd.Series:
     direction = np.sign(close.diff().fillna(0))
-    obv_val = (direction * volume).fillna(0).cumsum()
-    return obv_val
+    return (direction * volume).fillna(0).cumsum()
 
 
 def kdj(df: pd.DataFrame, period: int = 9, k_smooth: int = 3, d_smooth: int = 3):
     low_min = df["low"].rolling(window=period, min_periods=1).min()
     high_max = df["high"].rolling(window=period, min_periods=1).max()
     rsv = (df["close"] - low_min) / (high_max - low_min + 1e-9) * 100
-
     k = rsv.ewm(alpha=1.0 / k_smooth, adjust=False).mean()
     d = k.ewm(alpha=1.0 / d_smooth, adjust=False).mean()
     j = 3 * k - 2 * d
     return k, d, j
 
 
+def atr(df: pd.DataFrame, period: int = 14) -> float:
+    high = df["high"]
+    low = df["low"]
+    close = df["close"]
+    prev_close = close.shift(1)
+    tr = pd.concat([
+        (high - low).abs(),
+        (high - prev_close).abs(),
+        (low - prev_close).abs()
+    ], axis=1).max(axis=1)
+    return float(tr.rolling(period).mean().iloc[-1])
+
+
 # ==========================
-# نظام Score (0–100) + اتجاه احترافي
+# Score + تحليل شامل
 # ==========================
 
 def calc_score(df: pd.DataFrame) -> dict:
-    """
-    يحسب Score نهائي + معلومات الاتجاه + الدعوم والمقاومات
-    """
     last = df.iloc[-1]
     close = df["close"]
     volume = df["volume"].fillna(0)
@@ -191,132 +204,102 @@ def calc_score(df: pd.DataFrame) -> dict:
     bb_mid, bb_up, bb_low = bollinger(close, 20, 2)
     obv_series = obv(close, volume)
     k, d, j = kdj(df)
+    atr_val = atr(df, 14)
 
     price = float(last["close"])
     ema50_last = float(ema50.iloc[-1])
     ema100_last = float(ema100.iloc[-1])
     ema200_last = float(ema200.iloc[-1])
 
-    # --- Trend (0–25) ---
+    # Trend score
     trend_score = 0
     above_50 = price > ema50_last
     above_100 = price > ema100_last
     above_200 = price > ema200_last
-
     bull_stack = ema12.iloc[-1] > ema26.iloc[-1] > ema50_last > ema100_last > ema200_last
     bear_stack = ema12.iloc[-1] < ema26.iloc[-1] < ema50_last < ema100_last < ema200_last
 
-    if above_50:
-        trend_score += 5
-    if above_100:
-        trend_score += 5
-    if above_200:
-        trend_score += 5
-    if bull_stack:
-        trend_score += 10
-    elif bear_stack and not above_50:
-        trend_score += 0
-
-    if trend_score > 25:
-        trend_score = 25
+    if above_50: trend_score += 5
+    if above_100: trend_score += 5
+    if above_200: trend_score += 5
+    if bull_stack: trend_score += 10
+    elif bear_stack and not above_50: trend_score += 0
+    trend_score = min(trend_score, 25)
 
     if bull_stack and above_200:
-        trend_label = "strong_bull"
-        trend_ar = "صاعد قوي 🔥"
+        trend_label, trend_ar = "strong_bull", "صاعد قوي 🔥"
     elif (above_50 and above_100) and price > ema200_last:
-        trend_label = "bull"
-        trend_ar = "صاعد ✅"
+        trend_label, trend_ar = "bull", "صاعد ✅"
     elif bear_stack and not above_50 and not above_100 and not above_200:
-        trend_label = "strong_bear"
-        trend_ar = "هابط قوي 🚨"
+        trend_label, trend_ar = "strong_bear", "هابط قوي 🚨"
     elif bear_stack and not above_50:
-        trend_label = "bear"
-        trend_ar = "هابط ⚠️"
+        trend_label, trend_ar = "bear", "هابط ⚠️"
     else:
-        trend_label = "sideways"
-        trend_ar = "تذبذب ⚪"
+        trend_label, trend_ar = "sideways", "تذبذب ⚪"
 
-    # --- RSI (0–30) ---
+    # RSI score
+    def rsi_part(val):
+        if val < 25: return 10
+        elif val < 70: return 5
+        else: return -10
+
     r6 = float(rsi6.iloc[-1])
     r12 = float(rsi12.iloc[-1])
     r24 = float(rsi24.iloc[-1])
-
-    def rsi_part(val):
-        if val < 25:
-            return 10
-        elif val < 70:
-            return 5
-        else:
-            return -10
-
     rsi_score = rsi_part(r6) + rsi_part(r12) + rsi_part(r24)
-    rsi_score = max(0, min(30, rsi_score + 15))  # نعيد موازنة النتيجة
+    rsi_score = max(0, min(30, rsi_score + 15))
 
-    # --- Bollinger (0–15) ---
+    # Bollinger
     b_low = bb_low.iloc[-1]
     b_mid = bb_mid.iloc[-1]
     b_up = bb_up.iloc[-1]
     bb_score = 0
     if not np.isnan(b_low) and not np.isnan(b_up):
-        if price <= b_low:
-            bb_score += 15
-        elif price < b_mid:
-            bb_score += 8
-        elif price >= b_up:
-            bb_score -= 10
+        if price <= b_low: bb_score += 15
+        elif price < b_mid: bb_score += 8
+        elif price >= b_up: bb_score -= 10
     bb_score = max(0, min(15, bb_score))
 
-    # --- OBV (0–15) ---
+    # OBV
     obv_score = 0
     if len(obv_series) >= 10:
         obv_last = obv_series.iloc[-1]
         obv_prev = obv_series.iloc[-10]
-        if obv_last > obv_prev:
-            obv_score += 10
-        else:
-            obv_score -= 5
+        if obv_last > obv_prev: obv_score += 10
+        else: obv_score -= 5
     obv_score = max(0, min(15, obv_score + 5))
 
-    # --- KDJ (0–15) ---
+    # KDJ
     k_last = float(k.iloc[-1])
     d_last = float(d.iloc[-1])
-    j_last = float(j.iloc[-1]) if not np.isnan(j.iloc[-1]) else 50.0
     k_prev = float(k.iloc[-2]) if len(k) > 1 else k_last
+    golden_cross = k_last > d_last and (len(d) > 1 and k_prev < d.iloc[-2])
+    dead_cross = k_last < d_last and (len(d) > 1 and k_prev > d.iloc[-2])
 
     kdj_score = 0
-    golden_cross = k_last > d_last and k_prev < d.iloc[-2] if len(d) > 1 else False
-    dead_cross = k_last < d_last and k_prev > d.iloc[-2] if len(d) > 1 else False
-
-    if golden_cross and k_last < 30:
-        kdj_score += 15
-    elif k_last < 20:
-        kdj_score += 8
-    elif dead_cross and k_last > 70:
-        kdj_score -= 10
-
+    if golden_cross and k_last < 30: kdj_score += 15
+    elif k_last < 20: kdj_score += 8
+    elif dead_cross and k_last > 70: kdj_score -= 10
     kdj_score = max(0, min(15, kdj_score + 5))
 
-    # --- شمعة انعكاس بسيطة (0–10) ---
+    # شمعة انعكاس بسيطة
     candle_score = 0
     o = df["close"].shift(1).fillna(df["close"])
     h = df["high"]
     l = df["low"]
     c = df["close"]
-
     body = abs(c.iloc[-1] - o.iloc[-1])
     lower_wick = c.iloc[-1] - l.iloc[-1]
     upper_wick = h.iloc[-1] - c.iloc[-1]
-
     if body < (upper_wick + lower_wick) * 0.3 and lower_wick > body * 2:
         candle_score += 10
 
-    # --- دعم ومقاومة تقريبية ---
+    # دعم ومقاومة تقريبية
     recent_lows = df["low"].tail(40)
     recent_highs = df["high"].tail(40)
     support_level = float(recent_lows.min())
     resistance_level = float(recent_highs.max())
 
-    # --- المجموع ---
     total = trend_score + rsi_score + bb_score + obv_score + kdj_score + candle_score
     total = max(0, min(int(total), 100))
 
@@ -349,12 +332,9 @@ def calc_score(df: pd.DataFrame) -> dict:
         "dist_ema200": dist_ema200,
         "golden_kdj": golden_cross,
         "dead_kdj": dead_cross,
+        "atr": atr_val,
     }
 
-
-# ==========================
-# تصنيف الحالة (قاع / قمة / تذبذب)
-# ==========================
 
 def classify_state(info: dict) -> str:
     s = info["score"]
@@ -373,11 +353,28 @@ def classify_state(info: dict) -> str:
 
 
 # ==========================
-# Smart Alerts – التنبيهات الذكية
+# تنبيهات ذكية + أصوات
 # ==========================
 
+def send_sound_alert(text: str, sound_type: str | None = None):
+    """تنبيه نصي + محاولة إرسال صوت (اختياري)"""
+    try:
+        bot.send_message(chat_id=CHAT_ID, text=text)
+        # لو حاب تضيف ملفات صوت، ضعها في مجلد "sounds" بنفس اسم النوع
+        if sound_type:
+            path = f"sounds/{sound_type}.ogg"
+            try:
+                with open(path, "rb") as f:
+                    bot.send_audio(chat_id=CHAT_ID, audio=f)
+            except Exception:
+                # لو الملف غير موجود نتجاهل الصوت
+                pass
+    except Exception:
+        pass
+
+
 def smart_alerts(all_infos: dict):
-    alerts = []
+    alerts_texts = []
     now_ts = time.time()
 
     for sym, info in all_infos.items():
@@ -400,7 +397,7 @@ def smart_alerts(all_infos: dict):
         if strong_buy:
             key = f"{sym}_strong_buy"
             if now_ts - LAST_ALERTS.get(key, 0) > 60 * 15:
-                alerts.append(
+                txt = (
                     f"🟢💎 تنبيه شراء قوي على {sym}\n"
                     f"السعر: {price:.6f}\n"
                     f"RSI6: {rsi6:.1f}\n"
@@ -408,6 +405,7 @@ def smart_alerts(all_infos: dict):
                     f"Score: {score}\n"
                     f"الاتجاه: {trend}"
                 )
+                send_sound_alert(txt, sound_type="buy")
                 LAST_ALERTS[key] = now_ts
 
         # Strong Sell
@@ -420,7 +418,7 @@ def smart_alerts(all_infos: dict):
         if strong_sell:
             key = f"{sym}_strong_sell"
             if now_ts - LAST_ALERTS.get(key, 0) > 60 * 15:
-                alerts.append(
+                txt = (
                     f"🔴🚨 تنبيه بيع قوي على {sym}\n"
                     f"السعر: {price:.6f}\n"
                     f"RSI6: {rsi6:.1f}\n"
@@ -428,41 +426,43 @@ def smart_alerts(all_infos: dict):
                     f"Score: {score}\n"
                     f"الاتجاه: {trend}"
                 )
+                send_sound_alert(txt, sound_type="sell")
                 LAST_ALERTS[key] = now_ts
 
         # Potential Bottom
         if rsi6 < 35 and price <= support * 1.05:
             key = f"{sym}_bottom"
             if now_ts - LAST_ALERTS.get(key, 0) > 60 * 30:
-                alerts.append(
+                txt = (
                     f"🟡📉 قاع محتمل على {sym}\n"
                     f"السعر: {price:.6f}\n"
                     f"RSI6: {rsi6:.1f}\n"
                     f"الدعم: {support:.6f}"
                 )
+                send_sound_alert(txt, sound_type="bottom")
                 LAST_ALERTS[key] = now_ts
 
         # Potential Top
         if rsi6 > 65 and price >= resistance * 0.95:
             key = f"{sym}_top"
             if now_ts - LAST_ALERTS.get(key, 0) > 60 * 30:
-                alerts.append(
+                txt = (
                     f"🟠📈 قمة محتملة على {sym}\n"
                     f"السعر: {price:.6f}\n"
                     f"RSI6: {rsi6:.1f}\n"
                     f"المقاومة: {resistance:.6f}"
                 )
+                send_sound_alert(txt, sound_type="top")
                 LAST_ALERTS[key] = now_ts
 
-    return alerts
+    return alerts_texts
 
 
 # ==========================
-# Opportunity Mining – البحث عن أفضل الفرص
+# Opportunity Mining
 # ==========================
 
 def mine_opportunities(all_infos: dict, top_n: int = 3):
-    # نختار العملات ذات Score عالي + RSI معتدل
     candidates = [
         (sym, info) for sym, info in all_infos.items()
         if info["score"] >= 70 and info["rsi6"] < 60
@@ -479,7 +479,6 @@ def mine_opportunities(all_infos: dict, top_n: int = 3):
             "rsi6": info["rsi6"],
             "time": now_utc_str(),
         })
-
     return best
 
 
@@ -515,7 +514,6 @@ def build_full_report(all_infos: dict) -> str:
             continue
         lines.append(build_coin_report(sym, info))
 
-    # أفضل وأسوأ عملة
     best = max(all_infos.items(), key=lambda x: x[1]["score"])
     worst = min(all_infos.items(), key=lambda x: x[1]["score"])
 
@@ -526,10 +524,6 @@ def build_full_report(all_infos: dict) -> str:
     return header + "\n".join(lines)
 
 
-# ==========================
-# تحليل السوق لكل العملات
-# ==========================
-
 def analyze_market() -> dict:
     infos = {}
     for symbol, cg_id in COINS.items():
@@ -538,37 +532,113 @@ def analyze_market() -> dict:
             info = calc_score(df)
             infos[symbol] = info
         except Exception as e:
-            # في حالة خطأ لعملة معينة، نتجاهلها
             bot.send_message(chat_id=CHAT_ID, text=f"❌ خطأ في تحليل {symbol}:\n{e}")
     return infos
 
 
 # ==========================
-# خطة 12% أسبوعية – إدارة الصفقات
+# إدارة الصفقات + رأس المال + DCA + SL
 # ==========================
 
-def register_manual_buy(symbol: str, price: float):
+def suggest_smart_stop(info: dict, entry: float) -> float:
+    """اقتراح Stop Loss ذكي يعتمد على ATR + الدعم"""
+    atr_val = info["atr"]
+    support = info["support"]
+    # SL بين الدعم و entry - 1.5*ATR
+    raw_sl = min(entry - 1.5 * atr_val, support * 0.99)
+    return max(raw_sl, 0)
+
+
+def register_manual_buy(symbol: str, price: float, usd_size: float | None = None):
+    ensure_coin_capital(symbol)
+
+    if usd_size is None:
+        usd_size = max(capital["current"] * 0.1, 10.0)  # 10% أو 10$ كحد أدنى
+
+    if usd_size > capital["current"]:
+        usd_size = capital["current"]
+
+    amount = usd_size / price if price > 0 else 0
+    c = capital["coins"][symbol]
+
+    total_cost_prev = c["avg_price"] * c["amount"]
+    total_cost_new = total_cost_prev + usd_size
+    new_amount = c["amount"] + amount
+
+    c["amount"] = new_amount
+    c["avg_price"] = total_cost_new / new_amount if new_amount > 0 else 0
+    c["invested"] += usd_size
+
+    capital["current"] -= usd_size
+
     OPEN_TRADES[symbol] = {
-        "entry": price,
-        "target_12": round(price * 1.12, 6),
+        "entry": c["avg_price"],
+        "target_12": round(c["avg_price"] * 1.12, 6),
         "time": now_utc_str(),
         "auto": False,
+        "amount": c["amount"],
     }
 
 
 def register_auto_buy(symbol: str, price: float):
+    ensure_coin_capital(symbol)
+    usd_size = max(capital["current"] * 0.05, 10.0)  # 5% من رأس المال
+    if usd_size > capital["current"]:
+        usd_size = capital["current"]
+
+    amount = usd_size / price if price > 0 else 0
+    c = capital["coins"][symbol]
+
+    total_cost_prev = c["avg_price"] * c["amount"]
+    total_cost_new = total_cost_prev + usd_size
+    new_amount = c["amount"] + amount
+
+    c["amount"] = new_amount
+    c["avg_price"] = total_cost_new / new_amount if new_amount > 0 else 0
+    c["invested"] += usd_size
+
+    capital["current"] -= usd_size
+
     OPEN_TRADES[symbol] = {
-        "entry": price,
-        "target_12": round(price * 1.12, 6),
+        "entry": c["avg_price"],
+        "target_12": round(c["avg_price"] * 1.12, 6),
         "time": now_utc_str(),
         "auto": True,
+        "amount": c["amount"],
     }
 
 
+def auto_dca(symbol: str, info: dict):
+    """شراء تدرّجي DCA عندما يكون السعر في قاع واضح"""
+    if symbol not in OPEN_TRADES:
+        return
+
+    trade = OPEN_TRADES[symbol]
+    entry = trade["entry"]
+    price = info["last_close"]
+    rsi6 = info["rsi6"]
+    support = info["support"]
+
+    # شروط DCA:
+    # - السعر تحت الدخول
+    # - قريب من الدعم
+    # - RSI6 < 35
+    if price < entry and price <= support * 1.02 and rsi6 < 35 and capital["current"] > 10:
+        # نضيف 10% من رأس المال كتعزيز
+        usd_size = max(capital["current"] * 0.1, 10.0)
+        register_manual_buy(symbol, price, usd_size)
+        bot.send_message(
+            chat_id=CHAT_ID,
+            text=(
+                f"🟡 DCA على {symbol}\n"
+                f"تعزيز بسعر: {price:.6f}\n"
+                f"حجم نظري: {usd_size:.2f} USDT\n"
+                f"Entry جديد تقريبي: {capital['coins'][symbol]['avg_price']:.6f}"
+            )
+        )
+
+
 def check_plan_targets(all_infos: dict):
-    """
-    فحص الصفقات المفتوحة: هل تحقق هدف 12%؟
-    """
     to_close = []
     for sym, trade in OPEN_TRADES.items():
         if sym not in all_infos:
@@ -580,6 +650,13 @@ def check_plan_targets(all_infos: dict):
 
         if price >= target:
             profit_pct = (price / entry - 1) * 100
+            amount = trade.get("amount", 0)
+            profit_usd = (price - entry) * amount
+
+            capital["realized_profit"] += profit_usd
+            capital["current"] += profit_usd * 0.5
+            capital["saved"] += profit_usd * 0.5
+
             bot.send_message(
                 chat_id=CHAT_ID,
                 text=(
@@ -587,8 +664,9 @@ def check_plan_targets(all_infos: dict):
                     f"Entry: {entry:.6f}\n"
                     f"Current: {price:.6f}\n"
                     f"Target: {target:.6f}\n"
-                    f"الربح التقريبي: {profit_pct:.2f}%\n"
-                    "📤 يفضّل البيع الجزئي أو الكلي حسب خطتك."
+                    f"الربح التقريبي: {profit_pct:.2f}% (~{profit_usd:.2f} USDT)\n"
+                    f"📤 تم افتراضياً إضافة 50% للرأس مال و50% للادخار.\n"
+                    "هذه حسابات تعليمية داخلية فقط."
                 )
             )
             to_close.append(sym)
@@ -602,15 +680,8 @@ def check_plan_targets(all_infos: dict):
 # ==========================
 
 def hybrid_auto_trading(all_infos: dict):
-    """
-    وضع هجين: إذا لا توجد صفقة لـ XVG
-    وظهرت إشارة شراء قوية → يسجل دخول افتراضي.
-    وإذا ظهرت قمة قوية + ربح عالي → يوصي بالخروج.
-    """
     if not HYBRID_AUTO:
         return
-
-    # نركز أساساً على XVG
     if MAIN_COIN not in all_infos:
         return
 
@@ -622,14 +693,14 @@ def hybrid_auto_trading(all_infos: dict):
     support = info["support"]
     resistance = info["resistance"]
 
-    # لا يوجد صفقة حالية → نبحث عن فرصة دخول قوية
+    # لا يوجد صفقة → فرصة دخول آلي تعليمي
     if MAIN_COIN not in OPEN_TRADES:
         strong_buy = (
             score >= 80 and
             rsi6 < 35 and
             price <= support * 1.03
         )
-        if strong_buy:
+        if strong_buy and capital["current"] > 10:
             register_auto_buy(MAIN_COIN, price)
             bot.send_message(
                 chat_id=CHAT_ID,
@@ -638,14 +709,14 @@ def hybrid_auto_trading(all_infos: dict):
                     f"السعر: {price:.6f}\n"
                     f"الاتجاه: {trend}\n"
                     f"هدف 12%: {price * 1.12:.6f}\n"
-                    "هذه إشارة تعليمية فقط وليست تنفيذ حقيقي على منصة تداول."
+                    "هذه إشارة تعليمية فقط وليست تنفيذ فعلي على منصة التداول."
                 )
             )
     else:
-        # يوجد صفقة → نبحث عن خروج ذكي
+        # يوجد صفقة → خروج ذكي
         trade = OPEN_TRADES[MAIN_COIN]
         entry = trade["entry"]
-        target = trade["target_12"]
+        amount = trade.get("amount", 0)
         profit_pct = (price / entry - 1) * 100
 
         strong_sell = (
@@ -660,15 +731,14 @@ def hybrid_auto_trading(all_infos: dict):
                     f"🔴 Hybrid Auto: توصية خروج على {MAIN_COIN}\n"
                     f"Entry: {entry:.6f}\n"
                     f"Current: {price:.6f}\n"
-                    f"ربح تقريبي: {profit_pct:.2f}%\n"
+                    f"ربح تقريبي: {profit_pct:.2f}% على كمية تقريبية {amount:.2f}\n"
                     "يُفضل جني الربح الآن وفق نظام 12% الأسبوعي."
                 )
             )
-            # لا نحذف الصفقة تلقائياً، نترك لك القرار
 
 
 # ==========================
-# أوامر تيليجرام
+# أوامر التليجرام
 # ==========================
 
 def send_help(chat_id: int):
@@ -678,10 +748,11 @@ def send_help(chat_id: int):
             "🤖 أوامر البوت الذكي:\n"
             "/xvg - تحليل مفصل لعملة XVG\n"
             "/coin رمز - تحليل عملة معينة مثلاً /coin ROSE\n"
-            "/plan - عرض شرح خطة 12% الأسبوعية\n"
-            "/buy السعر [الرمز] - تسجيل شراء يدوي\n"
-            "/sell السعر [الرمز] - تسجيل بيع (معلومات فقط)\n"
-            "/dashboard - عرض ملخص السوق والفرص\n"
+            "/plan - شرح خطة 12% الأسبوعية\n"
+            "/buy السعر [الرمز] [حجم_USDT] - تسجيل شراء يدوي\n"
+            "   مثال: /buy 0.0065 XVG 100\n"
+            "/sell السعر [الرمز] [كمية] - حساب ربح صفقة\n"
+            "/dashboard - لوحة تحكم شاملة\n"
         )
     )
 
@@ -695,6 +766,8 @@ def cmd_xvg(chat_id: int):
         info = LAST_INFOS[MAIN_COIN]
         state = classify_state(info)
         trade = OPEN_TRADES.get(MAIN_COIN)
+        ensure_coin_capital(MAIN_COIN)
+        c = capital["coins"][MAIN_COIN]
 
         msg = (
             f"🔍 تحليل {MAIN_COIN}\n"
@@ -710,14 +783,20 @@ def cmd_xvg(chat_id: int):
             f"Score: {info['score']}/100\n"
             f"الدعم: {info['support']:.6f}\n"
             f"المقاومة: {info['resistance']:.6f}\n\n"
-            f"التقييم: {state}\n"
+            f"التقييم: {state}\n\n"
+            f"📦 المركز النظري على {MAIN_COIN}:\n"
+            f"الكمية: {c['amount']:.2f}\n"
+            f"متوسط السعر: {c['avg_price']:.6f}\n"
+            f"إجمالي استثمار: {c['invested']:.2f} USDT\n"
         )
 
         if trade:
+            sl = suggest_smart_stop(info, trade["entry"])
             msg += (
                 "\n📘 صفقة مفتوحة (خطة 12%):\n"
                 f"Entry: {trade['entry']:.6f}\n"
                 f"Target 12%: {trade['target_12']:.6f}\n"
+                f"Stop Loss ذكي مقترح: {sl:.6f}\n"
             )
 
         bot.send_message(chat_id=chat_id, text=msg)
@@ -746,48 +825,69 @@ def cmd_plan(chat_id: int):
         chat_id=chat_id,
         text=(
             "📘 خطة 12% الأسبوعية (XVG):\n\n"
-            "• الهدف: ربح 12% من كل دورة أسبوعية.\n"
-            "• البوت يتابع الصفقات المفتوحة ويحسب هدف 12% لكل Entry.\n"
-            "• عند وصول السعر للهدف، يرسل تنبيه 🎯.\n"
-            "• يمكنك تسجيل صفقة شراء يدويًا بالأمر:\n"
-            "  /buy 0.00650 XVG\n"
+            "• الهدف: ربح 12% لكل دورة أسبوعية تقريبًا.\n"
+            "• البوت يحسب هدف 12% لكل Entry.\n"
+            "• عند وصول السعر للهدف → تنبيه 🎯.\n"
+            "• تسجيل شراء يدوي:\n"
+            "  /buy 0.0065 XVG 100\n"
+            "  (سعر – رمز – حجم بالدولار)\n"
         )
     )
 
 
 def cmd_buy(chat_id: int, args: list):
     if not args:
-        bot.send_message(chat_id=chat_id, text="❌ استخدم: /buy السعر [الرمز]\nمثال: /buy 0.0065 XVG")
+        bot.send_message(chat_id=chat_id, text="❌ استخدم: /buy السعر [الرمز] [حجم_USDT]\nمثال: /buy 0.0065 XVG 100")
         return
 
     try:
         price = float(args[0])
     except Exception:
-        bot.send_message(chat_id=chat_id, text="❌ السعر غير صحيح. مثال: /buy 0.0065 XVG")
+        bot.send_message(chat_id=chat_id, text="❌ السعر غير صحيح. مثال: /buy 0.0065 XVG 100")
         return
 
     symbol = MAIN_COIN
+    usd_size = None
+
     if len(args) >= 2:
-        symbol = args[1].upper()
+        if args[1].upper() in COINS:
+            symbol = args[1].upper()
+            if len(args) >= 3:
+                try:
+                    usd_size = float(args[2])
+                except Exception:
+                    usd_size = None
+        else:
+            # لو كتب مباشرة الحجم بدون رمز
+            try:
+                usd_size = float(args[1])
+            except Exception:
+                pass
 
     if symbol not in COINS:
         bot.send_message(chat_id=chat_id, text=f"❌ العملة {symbol} غير مدعومة.")
         return
 
-    register_manual_buy(symbol, price)
+    if capital["current"] <= 0:
+        bot.send_message(chat_id=chat_id, text="⚠️ لا يوجد رأس مال متاح نظريًا لصفقات جديدة.")
+        return
+
+    register_manual_buy(symbol, price, usd_size)
+    trade = OPEN_TRADES[symbol]
     bot.send_message(
         chat_id=chat_id,
         text=(
             f"📥 تم تسجيل صفقة شراء على {symbol}\n"
-            f"Entry: {price:.6f}\n"
-            f"Target 12%: {price * 1.12:.6f}\n"
+            f"Entry (متوسط): {trade['entry']:.6f}\n"
+            f"Target 12%: {trade['target_12']:.6f}\n"
+            f"رأس المال المتبقي (نظريًا): {capital['current']:.2f} USDT"
         )
     )
 
 
 def cmd_sell(chat_id: int, args: list):
     if not args:
-        bot.send_message(chat_id=chat_id, text="❌ استخدم: /sell السعر [الرمز]\nمثال: /sell 0.0072 XVG")
+        bot.send_message(chat_id=chat_id, text="❌ استخدم: /sell السعر [الرمز] [كمية]\nمثال: /sell 0.0072 XVG 5000")
         return
 
     try:
@@ -797,42 +897,69 @@ def cmd_sell(chat_id: int, args: list):
         return
 
     symbol = MAIN_COIN
-    if len(args) >= 2:
-        symbol = args[1].upper()
+    amount = None
 
-    trade = OPEN_TRADES.get(symbol)
-    if not trade:
-        bot.send_message(chat_id=chat_id, text=f"ℹ️ لا توجد صفقة مسجلة لـ {symbol}.")
+    if len(args) >= 2:
+        if args[1].upper() in COINS:
+            symbol = args[1].upper()
+            if len(args) >= 3:
+                try:
+                    amount = float(args[2])
+                except Exception:
+                    amount = None
+        else:
+            try:
+                amount = float(args[1])
+            except Exception:
+                pass
+
+    ensure_coin_capital(symbol)
+    c = capital["coins"][symbol]
+
+    if amount is None or amount > c["amount"]:
+        amount = c["amount"]
+
+    if amount <= 0:
+        bot.send_message(chat_id=chat_id, text=f"ℹ️ لا تملك كمية مسجلة لـ {symbol} في المحرك الداخلي.")
         return
 
-    entry = trade["entry"]
+    entry = c["avg_price"]
     profit_pct = (price / entry - 1) * 100
+    profit_usd = (price - entry) * amount
 
     bot.send_message(
         chat_id=chat_id,
         text=(
-            f"📤 صفقة {symbol}:\n"
+            f"📤 صفقة {symbol} (حساب نظري):\n"
             f"Entry: {entry:.6f}\n"
             f"Exit: {price:.6f}\n"
-            f"الربح التقريبي: {profit_pct:.2f}%\n"
+            f"Quantity: {amount:.2f}\n"
+            f"الربح التقريبي: {profit_pct:.2f}% (~{profit_usd:.2f} USDT)\n"
+            "هذا الحساب داخلي فقط ولا يعني تنفيذ حقيقي على المنصة."
         )
     )
 
-    # لا نحذف الصفقة تلقائيًا، نترك لك الحرية
-    # يمكن إضافة حذف لو أردت:
-    # del OPEN_TRADES[symbol]
+    # تحديث رأس المال النظري والكمية
+    c["amount"] -= amount
+    c["invested"] -= min(c["invested"], entry * amount)
+    capital["current"] += price * amount
+    capital["realized_profit"] += profit_usd
 
 
 def cmd_dashboard(chat_id: int):
     lines = []
-    lines.append(f"📊 Dashboard – ملخص البوت الذكي\n⏰ {now_utc_str()}\n")
+    lines.append(f"📊 Dashboard – البوت الذكي\n⏰ {now_utc_str()}\n")
     lines.append(f"• العملات المراقبة: {len(COINS)}")
     lines.append(f"• صفقات مفتوحة: {len(OPEN_TRADES)}")
+    lines.append(f"• رأس المال الابتدائي: {capital['initial']:.2f} USDT")
+    lines.append(f"• رأس المال الحالي (نظري): {capital['current']:.2f} USDT")
+    lines.append(f"• الأرباح المحققة نظرياً: {capital['realized_profit']:.2f} USDT")
+    lines.append(f"• الادخار النظري: {capital['saved']:.2f} USDT")
 
     if LAST_INFOS:
         best = max(LAST_INFOS.items(), key=lambda x: x[1]["score"])
         worst = min(LAST_INFOS.items(), key=lambda x: x[1]["score"])
-        lines.append(f"• أقوى عملة الآن: {best[0]} (Score {best[1]['score']})")
+        lines.append(f"\n• أقوى عملة الآن: {best[0]} (Score {best[1]['score']})")
         lines.append(f"• أضعف عملة الآن: {worst[0]} (Score {worst[1]['score']})")
 
     if OPPORTUNITY_MEMORY:
@@ -843,10 +970,10 @@ def cmd_dashboard(chat_id: int):
             )
 
     if OPEN_TRADES:
-        lines.append("\n📘 الصفقات المفتوحة:")
+        lines.append("\n📘 الصفقات المفتوحة (خطة 12%):")
         for sym, tr in OPEN_TRADES.items():
             lines.append(
-                f"- {sym}: Entry {tr['entry']:.6f} | Target 12% {tr['target_12']:.6f}"
+                f"- {sym}: Entry {tr['entry']:.6f} | Target 12% {tr['target_12']:.6f} | Amount ~{tr.get('amount',0):.2f}"
             )
 
     bot.send_message(chat_id=chat_id, text="\n".join(lines))
@@ -903,7 +1030,7 @@ def process_updates(last_update_id=None):
 def main_loop():
     global LAST_INFOS
 
-    bot.send_message(chat_id=CHAT_ID, text="✅ البوت الذكي تم تشغيله بنجاح (Hybrid + 12% + Smart Alerts).")
+    bot.send_message(chat_id=CHAT_ID, text="✅ البوت الذكي تم تشغيله (Hybrid + 12% + Capital + Smart Alerts).")
 
     last_analysis_time = 0
     last_update_id = None
@@ -912,7 +1039,7 @@ def main_loop():
         # 1) أوامر التليجرام
         last_update_id = process_updates(last_update_id)
 
-        # 2) تحليل السوق + تقرير + تنبيهات + Hybrid + Plan
+        # 2) تحليل السوق
         now_ts = time.time()
         if now_ts - last_analysis_time > ANALYSIS_INTERVAL:
             try:
@@ -920,20 +1047,21 @@ def main_loop():
                 if infos:
                     LAST_INFOS = infos
 
-                    # تقرير السوق
                     report = build_full_report(infos)
                     bot.send_message(chat_id=CHAT_ID, text=report)
 
-                    # Smart Alerts
-                    alerts = smart_alerts(infos)
-                    for a in alerts:
-                        bot.send_message(chat_id=CHAT_ID, text=a)
+                    # تنبيهات ذكية
+                    smart_alerts(infos)
 
-                    # Opportunity Mining
-                    best = mine_opportunities(infos)
+                    # أفضل الفرص
+                    mine_opportunities(infos)
 
-                    # Hybrid Auto Mode
+                    # Hybrid Auto
                     hybrid_auto_trading(infos)
+
+                    # DCA على XVG (ويمكن توسعته لاحقاً)
+                    if MAIN_COIN in infos:
+                        auto_dca(MAIN_COIN, infos[MAIN_COIN])
 
                     # فحص أهداف 12%
                     check_plan_targets(infos)

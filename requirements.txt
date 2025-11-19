@@ -4,4 +4,3 @@ pandas
 pandas_ta
 requests
 websocket-client
-imghdr-pure

@@ -1403,6 +1403,7 @@ def process_updates(last_update_id=None):
         last_update_id = u.update_id + 1
         if not hasattr(u, "message") or u.message is None:
             continue
+
         chat_id = u.message.chat.id
         text = (u.message.text or "").strip()
 
@@ -1414,21 +1415,21 @@ def process_updates(last_update_id=None):
         args = parts[1:]
 
         if cmd in ["/start", "/help"]:
-            send_help(chat_id)
+            asyncio.create_task(send_help(chat_id))
         elif cmd == "/xvg":
-            cmd_xvg(chat_id)
+            asyncio.create_task(cmd_xvg(chat_id))
         elif cmd == "/coin" and args:
-            cmd_coin(chat_id, args[0])
+            asyncio.create_task(cmd_coin(chat_id, args[0]))
         elif cmd == "/plan":
-            cmd_plan(chat_id)
+            asyncio.create_task(cmd_plan(chat_id))
         elif cmd == "/buy":
-            cmd_buy(chat_id, args)
+            asyncio.create_task(cmd_buy(chat_id, args))
         elif cmd == "/sell":
-            cmd_sell(chat_id, args)
+            asyncio.create_task(cmd_sell(chat_id, args))
         elif cmd == "/dashboard":
-            cmd_dashboard(chat_id)
+            asyncio.create_task(cmd_dashboard(chat_id))
         else:
-            send_help(chat_id)
+            asyncio.create_task(send_help(chat_id))
 
     return last_update_id
 

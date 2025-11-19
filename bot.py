@@ -121,6 +121,8 @@ def fetch_ohlcv_coingecko(coin_id: str, days: int = 2, interval: str = "hourly")
         "days": days,
         "interval": interval,
     }
+
+time.sleep(0.5)   # تبطيء بسيط يمنع الضغط على API
     r = requests.get(url, params=params, timeout=15)
     r.raise_for_status()
     data = r.json()
@@ -872,6 +874,8 @@ async def analyze_market() -> dict:
             df = fetch_ohlcv_coingecko(cg_id, days=2, interval="hourly")
             info = calc_score(df)
             infos[symbol] = info
+time.sleep(1.2)   
+# لمنع 429 من CoinGecko
         except Exception as e:
             await tg_send(f"❌ خطأ في تحليل {symbol}:\n{e}")
     return infos

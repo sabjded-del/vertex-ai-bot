@@ -3,56 +3,69 @@ import time
 import requests
 import telebot
 
-# ====== الإعداد ======
+# ===== الإعداد =====
 TOKEN = os.getenv("TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 bot = telebot.TeleBot(TOKEN)
 
-# ====== قائمة العملات على Binance ======
+# ===== قائمة العملات =====
 COINS = {
-    "XVG": "XVGUSDT",
-    "ROSE": "ROSEUSDT",
-    "GALA": "GALAUSDT",
-    "BLUR": "BLURUSDT",
-    "FIL": "FILUSDT",
-    "KAIA": "KAIAUSDT"
+    "xvg": "XVGUSDT",
+    "rose": "ROSEUSDT",
+    "gala": "GALAUSDT",
+    "blur": "BLURUSDT",
+    "fil": "FILUSDT",
+    "kaia": "kaia"   # CoinGecko فقط
 }
 
-# ====== دالة جلب الأسعار من Binance ======
-def get_price(symbol):
+# ===== دالة جلب سعر Binance =====
+def get_binance_price(symbol):
     url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
     try:
         r = requests.get(url, timeout=5).json()
-        return float(r["price"])
+        if "price" in r:
+            return float(r["price"])
+        else:
+            return None
     except:
         return None
 
-# ====== إرسال رسالة الأسعار ======
+# ===== دالة جلب سعر CoinGecko =====
+def get_coingecko_price(coin_id):
+    url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd"
+    try:
+        r = requests.get(url, timeout=5).json()
+        if coin_id in r:
+            return float(r[coin_id]["usd"])
+        else:
+            return None
+    except:
+        return None
+
+# ===== إرسال الأسعار =====
 def send_prices():
-    message = "🔥 تحديث الأسعار المباشر 🔥\n\n"
+    msg = "🔥 تحديث الأسعار المباشر 🔥\n\n"
 
     for name, symbol in COINS.items():
-        price = get_price(symbol)
-        if price is None:
-            message += f"• {name}: N/A USD\n"
+
+        # KAIA – CoinGecko فقط
+        if name == "kaia":
+            price = get_coingecko_price("kaia")
         else:
-            message += f"• {name}: {price} USD\n"
+            price = get_binance_price(symbol)
 
-    bot.send_message(CHAT_ID, message)
+        # معالجة المفقود
+        if price is None:
+            msg += f"• {name.upper()}: N/A USD\n"
+        else:
+            msg += f"• {name.upper()}: {price} USD\n"
 
-# ====== الرد على أمر: أسعار ======
-@bot.message_handler(func=lambda m: m.text and m.text.strip() in ["اسعار", "الأسعار", "price", "prices"])
-def manual_prices(message):
-    send_prices()
+    bot.send_message(CHAT_ID, msg)
 
-# ====== إرسال رسالة تشغيل البوت ======
-bot.send_message(CHAT_ID, "🚀 تم تشغيل البوت بنجاح!")
+# ===== تشغيل مستمر =====
+bot.send_message(CHAT_ID, "تم تشغيل البوت بنجاح! 🚀")
 
-# ====== التحديث المستمر ======
 while True:
-    try:
-        send_prices()
-    except Exception as e:
-        bot.send_message(CHAT_ID, f"⚠️ خطأ: {e}")
-    time.sleep(60)  # تحديث كل دقيقة
+    send_prices()
+    time.sleep(20)

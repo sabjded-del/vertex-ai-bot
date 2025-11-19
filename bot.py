@@ -408,7 +408,7 @@ def detect_candlestick_patterns(df: pd.DataFrame):
 
 
 # ==========================
-# Score + تحليل شامل
+# Score + تحليل شامل (Balanced v2)
 # ==========================
 
 def calc_score(df: pd.DataFrame) -> dict:
@@ -416,6 +416,7 @@ def calc_score(df: pd.DataFrame) -> dict:
     close = df["close"]
     volume = df["volume"].fillna(0)
 
+    # ===== المؤشرات الأساسية =====
     ema12 = ema(close, 12)
     ema26 = ema(close, 26)
     ema50 = ema(close, 50)
@@ -436,8 +437,8 @@ def calc_score(df: pd.DataFrame) -> dict:
     ema100_last = float(ema100.iloc[-1])
     ema200_last = float(ema200.iloc[-1])
 
-    # --- Trend score ---
-    trend_score = 0
+    # ===== Trend score (الوزن الخام 0–25) =====
+    trend_score_raw = 0
     above_50 = price > ema50_last
     above_100 = price > ema100_last
     above_200 = price > ema200_last
@@ -445,16 +446,16 @@ def calc_score(df: pd.DataFrame) -> dict:
     bear_stack = ema12.iloc[-1] < ema26.iloc[-1] < ema50_last < ema100_last < ema200_last
 
     if above_50:
-        trend_score += 5
+        trend_score_raw += 5
     if above_100:
-        trend_score += 5
+        trend_score_raw += 5
     if above_200:
-        trend_score += 5
+        trend_score_raw += 5
     if bull_stack:
-        trend_score += 10
+        trend_score_raw += 10
     elif bear_stack and not above_50:
-        trend_score += 0
-    trend_score = min(trend_score, 25)
+        trend_score_raw += 0
+    trend_score_raw = min(trend_score_raw, 25)
 
     if bull_stack and above_200:
         trend_label, trend_ar = "strong_bull", "صاعد قوي 🔥"
@@ -467,7 +468,7 @@ def calc_score(df: pd.DataFrame) -> dict:
     else:
         trend_label, trend_ar = "sideways", "تذبذب ⚪"
 
-    # --- RSI score ---
+    # ===== RSI score (الوزن الخام 0–30) =====
     def rsi_part(val):
         if val < 25:
             return 10
@@ -479,119 +480,154 @@ def calc_score(df: pd.DataFrame) -> dict:
     r6 = float(rsi6.iloc[-1])
     r12 = float(rsi12.iloc[-1])
     r24 = float(rsi24.iloc[-1])
-    rsi_score = rsi_part(r6) + rsi_part(r12) + rsi_part(r24)
-    rsi_score = max(0, min(30, rsi_score + 15))
+    rsi_score_raw = rsi_part(r6) + rsi_part(r12) + rsi_part(r24)
+    rsi_score_raw = max(0, min(30, rsi_score_raw + 15))
 
-    # --- Bollinger score ---
+    # ===== Bollinger score (الوزن الخام 0–15) =====
     b_low = bb_low.iloc[-1]
     b_mid = bb_mid.iloc[-1]
     b_up = bb_up.iloc[-1]
-    bb_score = 0
+    bb_score_raw = 0
     if not np.isnan(b_low) and not np.isnan(b_up):
         if price <= b_low:
-            bb_score += 15
+            bb_score_raw += 15
         elif price < b_mid:
-            bb_score += 8
+            bb_score_raw += 8
         elif price >= b_up:
-            bb_score -= 10
-    bb_score = max(0, min(15, bb_score))
+            bb_score_raw -= 10
+    bb_score_raw = max(0, min(15, bb_score_raw))
 
-    # --- OBV score ---
-    obv_score = 0
+    # ===== OBV score (الوزن الخام 0–15) =====
+    obv_score_raw = 0
     if len(obv_series) >= 10:
         obv_last = obv_series.iloc[-1]
         obv_prev = obv_series.iloc[-10]
         if obv_last > obv_prev:
-            obv_score += 10
+            obv_score_raw += 10
         else:
-            obv_score -= 5
-    obv_score = max(0, min(15, obv_score + 5))
+            obv_score_raw -= 5
+    obv_score_raw = max(0, min(15, obv_score_raw + 5))
 
-    # --- KDJ score ---
+    # ===== KDJ score (الوزن الخام 0–15) =====
     k_last = float(k.iloc[-1])
     d_last = float(d.iloc[-1])
     k_prev = float(k.iloc[-2]) if len(k) > 1 else k_last
     golden_cross = k_last > d_last and (len(d) > 1 and k_prev < d.iloc[-2])
     dead_cross = k_last < d_last and (len(d) > 1 and k_prev > d.iloc[-2])
 
-    kdj_score = 0
+    kdj_score_raw = 0
     if golden_cross and k_last < 30:
-        kdj_score += 15
+        kdj_score_raw += 15
     elif k_last < 20:
-        kdj_score += 8
+        kdj_score_raw += 8
     elif dead_cross and k_last > 70:
-        kdj_score -= 10
-    kdj_score = max(0, min(15, kdj_score + 5))
+        kdj_score_raw -= 10
+    kdj_score_raw = max(0, min(15, kdj_score_raw + 5))
 
-    # --- دعم ومقاومة تقريبية ---
+    # ===== دعم / مقاومة تقريبية =====
     recent_lows = df["low"].tail(40)
     recent_highs = df["high"].tail(40)
     support_level = float(recent_lows.min())
     resistance_level = float(recent_highs.max())
 
-    # Zone
     zone = "neutral"
     if price <= support_level * 1.03:
         zone = "demand"
     elif price >= resistance_level * 0.97:
         zone = "supply"
 
-    # Bollinger state
     boll_state = "middle"
     if not np.isnan(b_low) and price <= b_low:
         boll_state = "lower"
     elif not np.isnan(b_up) and price >= b_up:
         boll_state = "upper"
 
-    # --- Candlestick patterns (متقدم) ---
+    # ===== نماذج الشموع (Candlestick AI) =====
     patterns = detect_candlestick_patterns(df)
 
-    # Candle score (حسب النماذج + المنطقة)
-    candle_score = 0
-
-    bullish_patterns = {"Hammer/Hanging Man", "Bullish Engulfing", "Piercing Line",
-                        "Morning Star", "Three White Soldiers", "Dragonfly Doji"}
-    bearish_patterns = {"Bearish Engulfing", "Dark Cloud Cover", "Evening Star",
-                        "Three Black Crows", "Gravestone Doji", "Tweezer Top"}
+    candle_score_raw = 0
+    bullish_patterns = {
+        "Hammer/Hanging Man", "Bullish Engulfing", "Piercing Line",
+        "Morning Star", "Three White Soldiers", "Dragonfly Doji"
+    }
+    bearish_patterns = {
+        "Bearish Engulfing", "Dark Cloud Cover", "Evening Star",
+        "Three Black Crows", "Gravestone Doji", "Tweezer Top"
+    }
 
     for p in patterns:
         if p in bullish_patterns and zone == "demand":
-            candle_score += 8
+            candle_score_raw += 8
         elif p in bullish_patterns:
-            candle_score += 5
+            candle_score_raw += 5
+
         if p in bearish_patterns and zone == "supply":
-            candle_score += 8  # سالب في التقييم العام
+            candle_score_raw += 8
         elif p in bearish_patterns:
-            candle_score += 4
+            candle_score_raw += 4
+
         if "Doji" in p and zone in ("demand", "supply"):
-            candle_score += 2
+            candle_score_raw += 2
 
-    # لو في نماذج قوية جداً في القاع أو القمة
     if "Morning Star" in patterns and zone == "demand":
-        candle_score += 10
+        candle_score_raw += 10
     if "Evening Star" in patterns and zone == "supply":
-        candle_score += 10
+        candle_score_raw += 10
     if "Three White Soldiers" in patterns and zone == "demand":
-        candle_score += 8
+        candle_score_raw += 8
     if "Three Black Crows" in patterns and zone == "supply":
-        candle_score += 8
+        candle_score_raw += 8
 
-    candle_score = max(0, min(15, candle_score + 5))
+    candle_score_raw = max(0, min(15, candle_score_raw + 5))
+
+    # ==========================
+    #  ✅ موازنة الأوزان (Balanced Model رقم 2)
+    # ==========================
+    # Trend:   من 0–25  → يُعاد توزيعها إلى 0–30
+    # RSI:     من 0–30  → 0–25
+    # Boll:    من 0–15  → 0–15 (نفسه)
+    # OBV:     من 0–15  → 0–10
+    # KDJ:     من 0–15  → 0–10
+    # Candles: من 0–15  → 0–10
+
+    def scale(value, old_max, new_max):
+        if old_max <= 0:
+            return 0.0
+        v = max(0.0, min(float(value), float(old_max)))
+        return (v / old_max) * new_max
+
+    trend_score = scale(trend_score_raw, 25, 30)
+    rsi_score = scale(rsi_score_raw, 30, 25)
+    bb_score = scale(bb_score_raw, 15, 15)
+    obv_score = scale(obv_score_raw, 15, 10)
+    kdj_score = scale(kdj_score_raw, 15, 10)
+    candle_score = scale(candle_score_raw, 15, 10)
 
     total = trend_score + rsi_score + bb_score + obv_score + kdj_score + candle_score
-    total = max(0, min(int(total), 100))
+    total = max(0, min(int(round(total)), 100))
 
     dist_ema50 = (price / ema50_last - 1) * 100 if ema50_last else 0.0
     dist_ema200 = (price / ema200_last - 1) * 100 if ema200_last else 0.0
 
     return {
         "score": total,
+
+        # القيم بعد الموازنة (المهمة للقرار)
         "trend_score": trend_score,
         "rsi_score": rsi_score,
         "bb_score": bb_score,
         "obv_score": obv_score,
         "kdj_score": kdj_score,
         "candle_score": candle_score,
+
+        # النسخ الخام (لمن يحب التحليل التفصيلي لاحقاً)
+        "trend_score_raw": trend_score_raw,
+        "rsi_score_raw": rsi_score_raw,
+        "bb_score_raw": bb_score_raw,
+        "obv_score_raw": obv_score_raw,
+        "kdj_score_raw": kdj_score_raw,
+        "candle_score_raw": candle_score_raw,
+
         "last_close": price,
         "rsi6": r6,
         "rsi12": r12,
@@ -1325,7 +1361,7 @@ def main_loop():
 
     bot.send_message(
         chat_id=CHAT_ID,
-        text="✅ البوت الذكي تم تشغيله (Hybrid + 12% + Capital + Smart Alerts + Candlestick AI Pro)."
+        text="✅ البوت الذكي تم تشغيله (Hybrid + 12% + Capital + Smart Alerts + Candlestick AI Pro + Balanced Score v2)."
     )
 
     last_analysis_time = 0
@@ -1371,7 +1407,6 @@ def main_loop():
             last_analysis_time = now_ts
 
         time.sleep(POLL_INTERVAL)
-
 
 if __name__ == "__main__":
     main_loop()

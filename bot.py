@@ -8,9 +8,6 @@ CHAT_ID = os.getenv("CHAT_ID")
 
 bot = telebot.TeleBot(TOKEN)
 
-# رسالة تشغيل مرة واحدة فقط
-bot.send_message(CHAT_ID, "🚀 تم تشغيل البوت بنجاح!")
-
 COINS = {
     "xvg": "verge",
     "rose": "oasis-network",
@@ -20,14 +17,7 @@ COINS = {
     "kaia": "kaia"
 }
 
-def get_price(symbol, coin_id):
-    # خاص لـ XVG لأن Coingecko لا يدعمها
-    if symbol == "xvg":
-        url = "https://api.coinpaprika.com/v1/tickers/xvg-verge"
-        r = requests.get(url).json()
-        return r["quotes"]["USD"]["price"]
-
-    # باقي العملات من Coingecko
+def get_price(coin_id):
     url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd"
     r = requests.get(url).json()
     return r[coin_id]["usd"]
@@ -35,11 +25,12 @@ def get_price(symbol, coin_id):
 def send_prices():
     msg = "📊 **أسعار العملات الآن:**\n\n"
     for symbol, coin_id in COINS.items():
-        price = get_price(symbol, coin_id)
-        msg += f"- {symbol.upper()}: {price}\n"
-    bot.send_message(CHAT_ID, msg)
+        price = get_price(coin_id)
+        msg += f"• {symbol.upper()}: {price}$\n"
+    bot.send_message(CHAT_ID, msg, parse_mode="Markdown")
 
-# يحدث كل 15 دقيقة
+bot.send_message(CHAT_ID, "🚀 تم تشغيل البوت بنجاح!")
+
 while True:
     send_prices()
-    time.sleep(900)
+    time.sleep(900)  # كل 15 دقيقة

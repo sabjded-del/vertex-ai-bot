@@ -237,14 +237,12 @@ def analyze_single_candle(c):
         if upper > full * 0.4 and lower < full * 0.1:
             patterns.append("Gravestone Doji")
 
-    # Hammer / Hanging Man / Inverted Hammer / Shooting Star
     # Hammer / Hanging Man (ظل سفلي طويل)
     if (
         lower > body * 2 and
         upper <= body * 0.3 and
         body <= full * 0.4
     ):
-        # الاتجاه السابق يحدد: Hammer / Hanging Man
         patterns.append("Hammer/Hanging Man")
 
     # Inverted Hammer / Shooting Star (ظل علوي طويل)
@@ -670,20 +668,16 @@ def classify_state(info: dict) -> str:
 
 
 # ==========================
-# تنبيهات ذكية + أصوات
+# تنبيهات ذكية (بدون صوت نهائياً)
 # ==========================
 
 def send_sound_alert(text: str, sound_type: str | None = None):
-    """تنبيه نصي + محاولة إرسال صوت (اختياري)"""
+    """
+    نسخة بدون صوت:
+    ترسل تنبيه نصي فقط ولا ترسل أي ملفات صوتية.
+    """
     try:
         bot.send_message(chat_id=CHAT_ID, text=text)
-        if sound_type:
-            path = f"sounds/{sound_type}.ogg"
-            try:
-                with open(path, "rb") as f:
-                    bot.send_audio(chat_id=CHAT_ID, audio=f)
-            except Exception:
-                pass
     except Exception:
         pass
 
@@ -725,7 +719,7 @@ def smart_alerts(all_infos: dict):
                     f"المنطقة: {zone}\n"
                     f"نموذج الشموع: {patterns_str}"
                 )
-                send_sound_alert(txt, sound_type="buy")
+                send_sound_alert(txt)  # بدون صوت
                 LAST_ALERTS[key] = now_ts
 
         # Strong Sell
@@ -748,7 +742,7 @@ def smart_alerts(all_infos: dict):
                     f"المنطقة: {zone}\n"
                     f"نموذج الشموع: {patterns_str}"
                 )
-                send_sound_alert(txt, sound_type="sell")
+                send_sound_alert(txt)
                 LAST_ALERTS[key] = now_ts
 
         # Potential Bottom
@@ -763,7 +757,7 @@ def smart_alerts(all_infos: dict):
                     f"المنطقة: {zone}\n"
                     f"نموذج الشموع: {patterns_str}"
                 )
-                send_sound_alert(txt, sound_type="bottom")
+                send_sound_alert(txt)
                 LAST_ALERTS[key] = now_ts
 
         # Potential Top
@@ -778,7 +772,7 @@ def smart_alerts(all_infos: dict):
                     f"المنطقة: {zone}\n"
                     f"نموذج الشموع: {patterns_str}"
                 )
-                send_sound_alert(txt, sound_type="top")
+                send_sound_alert(txt)
                 LAST_ALERTS[key] = now_ts
 
 
@@ -1361,7 +1355,7 @@ def main_loop():
 
     bot.send_message(
         chat_id=CHAT_ID,
-        text="✅ البوت الذكي تم تشغيله (Hybrid + 12% + Capital + Smart Alerts + Candlestick AI Pro + Balanced Score v2)."
+        text="✅ البوت الذكي تم تشغيله (Hybrid + 12% + Capital + Smart Alerts + Candlestick AI Pro + Balanced Score v2 – بدون صوت)."
     )
 
     last_analysis_time = 0
@@ -1407,6 +1401,7 @@ def main_loop():
             last_analysis_time = now_ts
 
         time.sleep(POLL_INTERVAL)
+
 
 if __name__ == "__main__":
     main_loop()

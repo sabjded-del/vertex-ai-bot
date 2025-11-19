@@ -14,7 +14,7 @@ COINS = {
     "gala": "gala",
     "blur": "blur",
     "fil": "filecoin",
-    "kaia": "kaia"
+    "kaia": "kairos"
 }
 
 def get_price(coin_id):

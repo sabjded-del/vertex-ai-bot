@@ -123,6 +123,7 @@ def fetch_ohlcv_coingecko(coin_id: str, days: int = 2, interval: str = "hourly")
                        df_vol.sort_values("time"),
                        on="time")
 
+    # تقريب high/low من حركة السعر الأخيرة
     df["high"] = df["close"].rolling(3, min_periods=1).max()
     df["low"] = df["close"].rolling(3, min_periods=1).min()
     return df
@@ -183,6 +184,76 @@ def atr(df: pd.DataFrame, period: int = 14) -> float:
 
 
 # ==========================
+# Candlestick AI Engine
+# ==========================
+
+def analyze_candle(candle_prev, candle):
+    """
+    candle, candle_prev = {open, high, low, close}
+    """
+    open_ = candle["open"]
+    high = candle["high"]
+    low = candle["low"]
+    close = candle["close"]
+
+    body = abs(open_ - close)
+    upper_wick = high - max(open_, close)
+    lower_wick = min(open_, close) - low
+    full_range = high - low if high != low else 1e-9
+
+    patterns = []
+
+    # Hammer
+    if (
+        lower_wick > body * 2 and
+        upper_wick <= body * 0.3 and
+        body <= full_range * 0.3
+    ):
+        patterns.append("Hammer")
+
+    # Shooting Star
+    if (
+        upper_wick > body * 2 and
+        lower_wick <= body * 0.3 and
+        body <= full_range * 0.3
+    ):
+        patterns.append("Shooting Star")
+
+    # Doji
+    if body <= full_range * 0.1:
+        patterns.append("Doji")
+
+    # Bullish Engulfing
+    if candle_prev:
+        if (
+            candle_prev["close"] < candle_prev["open"] and
+            close > open_ and
+            close > candle_prev["open"] and
+            open_ < candle_prev["close"]
+        ):
+            patterns.append("Bullish Engulfing")
+
+    return patterns
+
+
+def detect_morning_star(c1, c2, c3):
+    """
+    ثلاث شمعات: هبوط قوي + شمعة صغيرة + صعود قوي
+    """
+    body1 = abs(c1["open"] - c1["close"])
+    body2 = abs(c2["open"] - c2["close"])
+    body3 = abs(c3["open"] - c3["close"])
+
+    full_range1 = c1["high"] - c1["low"] if c1["high"] != c1["low"] else 1e-9
+
+    cond1 = c1["close"] < c1["open"] and body1 > body2 * 2
+    cond2 = body2 <= full_range1 * 0.2
+    cond3 = c3["close"] > c3["open"] and c3["close"] > (c1["open"] + c1["close"]) / 2
+
+    return cond1 and cond2 and cond3
+
+
+# ==========================
 # Score + تحليل شامل
 # ==========================
 
@@ -219,11 +290,16 @@ def calc_score(df: pd.DataFrame) -> dict:
     bull_stack = ema12.iloc[-1] > ema26.iloc[-1] > ema50_last > ema100_last > ema200_last
     bear_stack = ema12.iloc[-1] < ema26.iloc[-1] < ema50_last < ema100_last < ema200_last
 
-    if above_50: trend_score += 5
-    if above_100: trend_score += 5
-    if above_200: trend_score += 5
-    if bull_stack: trend_score += 10
-    elif bear_stack and not above_50: trend_score += 0
+    if above_50:
+        trend_score += 5
+    if above_100:
+        trend_score += 5
+    if above_200:
+        trend_score += 5
+    if bull_stack:
+        trend_score += 10
+    elif bear_stack and not above_50:
+        trend_score += 0
     trend_score = min(trend_score, 25)
 
     if bull_stack and above_200:
@@ -239,9 +315,12 @@ def calc_score(df: pd.DataFrame) -> dict:
 
     # RSI score
     def rsi_part(val):
-        if val < 25: return 10
-        elif val < 70: return 5
-        else: return -10
+        if val < 25:
+            return 10
+        elif val < 70:
+            return 5
+        else:
+            return -10
 
     r6 = float(rsi6.iloc[-1])
     r12 = float(rsi12.iloc[-1])
@@ -255,9 +334,12 @@ def calc_score(df: pd.DataFrame) -> dict:
     b_up = bb_up.iloc[-1]
     bb_score = 0
     if not np.isnan(b_low) and not np.isnan(b_up):
-        if price <= b_low: bb_score += 15
-        elif price < b_mid: bb_score += 8
-        elif price >= b_up: bb_score -= 10
+        if price <= b_low:
+            bb_score += 15
+        elif price < b_mid:
+            bb_score += 8
+        elif price >= b_up:
+            bb_score -= 10
     bb_score = max(0, min(15, bb_score))
 
     # OBV
@@ -265,8 +347,10 @@ def calc_score(df: pd.DataFrame) -> dict:
     if len(obv_series) >= 10:
         obv_last = obv_series.iloc[-1]
         obv_prev = obv_series.iloc[-10]
-        if obv_last > obv_prev: obv_score += 10
-        else: obv_score -= 5
+        if obv_last > obv_prev:
+            obv_score += 10
+        else:
+            obv_score -= 5
     obv_score = max(0, min(15, obv_score + 5))
 
     # KDJ
@@ -277,28 +361,77 @@ def calc_score(df: pd.DataFrame) -> dict:
     dead_cross = k_last < d_last and (len(d) > 1 and k_prev > d.iloc[-2])
 
     kdj_score = 0
-    if golden_cross and k_last < 30: kdj_score += 15
-    elif k_last < 20: kdj_score += 8
-    elif dead_cross and k_last > 70: kdj_score -= 10
+    if golden_cross and k_last < 30:
+        kdj_score += 15
+    elif k_last < 20:
+        kdj_score += 8
+    elif dead_cross and k_last > 70:
+        kdj_score -= 10
     kdj_score = max(0, min(15, kdj_score + 5))
-
-    # شمعة انعكاس بسيطة
-    candle_score = 0
-    o = df["close"].shift(1).fillna(df["close"])
-    h = df["high"]
-    l = df["low"]
-    c = df["close"]
-    body = abs(c.iloc[-1] - o.iloc[-1])
-    lower_wick = c.iloc[-1] - l.iloc[-1]
-    upper_wick = h.iloc[-1] - c.iloc[-1]
-    if body < (upper_wick + lower_wick) * 0.3 and lower_wick > body * 2:
-        candle_score += 10
 
     # دعم ومقاومة تقريبية
     recent_lows = df["low"].tail(40)
     recent_highs = df["high"].tail(40)
     support_level = float(recent_lows.min())
     resistance_level = float(recent_highs.max())
+
+    # Zone (Demand / Supply / Neutral)
+    zone = "neutral"
+    if price <= support_level * 1.03:
+        zone = "demand"
+    elif price >= resistance_level * 0.97:
+        zone = "supply"
+
+    # Bollinger state
+    boll_state = "middle"
+    if not np.isnan(b_low) and price <= b_low:
+        boll_state = "lower"
+    elif not np.isnan(b_up) and price >= b_up:
+        boll_state = "upper"
+
+    # Candlestick Patterns (باستخدام تقريب للـ Open)
+    o_series = df["close"].shift(1).fillna(df["close"])
+    h_series = df["high"]
+    l_series = df["low"]
+    c_series = df["close"]
+
+    def make_candle(idx: int):
+        return {
+            "open": float(o_series.iloc[idx]),
+            "high": float(h_series.iloc[idx]),
+            "low": float(l_series.iloc[idx]),
+            "close": float(c_series.iloc[idx]),
+        }
+
+    patterns = []
+    if len(df) >= 1:
+        last_idx = len(df) - 1
+        last_candle = make_candle(last_idx)
+        prev_candle = make_candle(last_idx - 1) if len(df) > 1 else None
+
+        patterns = analyze_candle(prev_candle, last_candle)
+
+        if len(df) >= 3:
+            c1 = make_candle(last_idx - 2)
+            c2 = make_candle(last_idx - 1)
+            c3 = make_candle(last_idx)
+            if detect_morning_star(c1, c2, c3):
+                patterns.append("Morning Star")
+
+    # شموع + سياق = Candle Score
+    candle_score = 0
+    if "Hammer" in patterns and zone == "demand":
+        candle_score += 12
+    if "Morning Star" in patterns and zone == "demand":
+        candle_score += 15
+    if "Bullish Engulfing" in patterns and zone == "demand":
+        candle_score += 10
+    if "Shooting Star" in patterns and zone == "supply":
+        candle_score -= 10
+    if "Doji" in patterns and zone in ("demand", "supply"):
+        candle_score += 3
+
+    candle_score = max(0, min(15, candle_score + 5))
 
     total = trend_score + rsi_score + bb_score + obv_score + kdj_score + candle_score
     total = max(0, min(int(total), 100))
@@ -333,6 +466,9 @@ def calc_score(df: pd.DataFrame) -> dict:
         "golden_kdj": golden_cross,
         "dead_kdj": dead_cross,
         "atr": atr_val,
+        "patterns": patterns,
+        "zone": zone,
+        "boll_state": boll_state,
     }
 
 
@@ -374,7 +510,6 @@ def send_sound_alert(text: str, sound_type: str | None = None):
 
 
 def smart_alerts(all_infos: dict):
-    alerts_texts = []
     now_ts = time.time()
 
     for sym, info in all_infos.items():
@@ -386,6 +521,9 @@ def smart_alerts(all_infos: dict):
         bb_low = info["bb_low"]
         bb_up = info["bb_up"]
         trend = info["trend_ar"]
+        patterns = info.get("patterns", [])
+
+        patterns_str = ", ".join(patterns) if patterns else "لا يوجد نموذج مهم"
 
         # Strong Buy
         strong_buy = (
@@ -403,7 +541,8 @@ def smart_alerts(all_infos: dict):
                     f"RSI6: {rsi6:.1f}\n"
                     f"الدعم: {support:.6f}\n"
                     f"Score: {score}\n"
-                    f"الاتجاه: {trend}"
+                    f"الاتجاه: {trend}\n"
+                    f"نموذج الشموع: {patterns_str}"
                 )
                 send_sound_alert(txt, sound_type="buy")
                 LAST_ALERTS[key] = now_ts
@@ -424,7 +563,8 @@ def smart_alerts(all_infos: dict):
                     f"RSI6: {rsi6:.1f}\n"
                     f"المقاومة: {resistance:.6f}\n"
                     f"Score: {score}\n"
-                    f"الاتجاه: {trend}"
+                    f"الاتجاه: {trend}\n"
+                    f"نموذج الشموع: {patterns_str}"
                 )
                 send_sound_alert(txt, sound_type="sell")
                 LAST_ALERTS[key] = now_ts
@@ -437,7 +577,8 @@ def smart_alerts(all_infos: dict):
                     f"🟡📉 قاع محتمل على {sym}\n"
                     f"السعر: {price:.6f}\n"
                     f"RSI6: {rsi6:.1f}\n"
-                    f"الدعم: {support:.6f}"
+                    f"الدعم: {support:.6f}\n"
+                    f"نموذج الشموع: {patterns_str}"
                 )
                 send_sound_alert(txt, sound_type="bottom")
                 LAST_ALERTS[key] = now_ts
@@ -450,12 +591,11 @@ def smart_alerts(all_infos: dict):
                     f"🟠📈 قمة محتملة على {sym}\n"
                     f"السعر: {price:.6f}\n"
                     f"RSI6: {rsi6:.1f}\n"
-                    f"المقاومة: {resistance:.6f}"
+                    f"المقاومة: {resistance:.6f}\n"
+                    f"نموذج الشموع: {patterns_str}"
                 )
                 send_sound_alert(txt, sound_type="top")
                 LAST_ALERTS[key] = now_ts
-
-    return alerts_texts
 
 
 # ==========================
@@ -488,16 +628,20 @@ def mine_opportunities(all_infos: dict, top_n: int = 3):
 
 def build_coin_report(symbol: str, info: dict, is_main: bool = False) -> str:
     state = classify_state(info)
+    patterns = info.get("patterns", [])
+    patterns_str = ", ".join(patterns) if patterns else "لا يوجد"
+
     line1 = f"• {symbol}: {info['last_close']:.6f} USD | Score: {info['score']}/100"
     line2 = (
         f"  RSI(6/12/24): {info['rsi6']:.1f} / {info['rsi12']:.1f} / {info['rsi24']:.1f} | "
         f"Trend: {info.get('trend_ar', '')}"
     )
     line3 = f"  دعم: {info['support']:.6f} | مقاومة: {info['resistance']:.6f}"
-    line4 = f"  الحالة: {state}"
+    line4 = f"  نماذج الشموع: {patterns_str}"
+    line5 = f"  الحالة: {state}"
     if is_main:
         line1 = "⭐ " + line1
-    return "\n".join([line1, line2, line3, line4])
+    return "\n".join([line1, line2, line3, line4, line5])
 
 
 def build_full_report(all_infos: dict) -> str:
@@ -624,7 +768,6 @@ def auto_dca(symbol: str, info: dict):
     # - قريب من الدعم
     # - RSI6 < 35
     if price < entry and price <= support * 1.02 and rsi6 < 35 and capital["current"] > 10:
-        # نضيف 10% من رأس المال كتعزيز
         usd_size = max(capital["current"] * 0.1, 10.0)
         register_manual_buy(symbol, price, usd_size)
         bot.send_message(
@@ -768,6 +911,8 @@ def cmd_xvg(chat_id: int):
         trade = OPEN_TRADES.get(MAIN_COIN)
         ensure_coin_capital(MAIN_COIN)
         c = capital["coins"][MAIN_COIN]
+        patterns = info.get("patterns", [])
+        patterns_str = ", ".join(patterns) if patterns else "لا يوجد"
 
         msg = (
             f"🔍 تحليل {MAIN_COIN}\n"
@@ -782,7 +927,8 @@ def cmd_xvg(chat_id: int):
             f"الاتجاه: {info['trend_ar']}\n"
             f"Score: {info['score']}/100\n"
             f"الدعم: {info['support']:.6f}\n"
-            f"المقاومة: {info['resistance']:.6f}\n\n"
+            f"المقاومة: {info['resistance']:.6f}\n"
+            f"نماذج الشموع: {patterns_str}\n\n"
             f"التقييم: {state}\n\n"
             f"📦 المركز النظري على {MAIN_COIN}:\n"
             f"الكمية: {c['amount']:.2f}\n"
@@ -1030,7 +1176,10 @@ def process_updates(last_update_id=None):
 def main_loop():
     global LAST_INFOS
 
-    bot.send_message(chat_id=CHAT_ID, text="✅ البوت الذكي تم تشغيله (Hybrid + 12% + Capital + Smart Alerts).")
+    bot.send_message(
+        chat_id=CHAT_ID,
+        text="✅ البوت الذكي تم تشغيله (Hybrid + 12% + Capital + Smart Alerts + Candlestick AI)."
+    )
 
     last_analysis_time = 0
     last_update_id = None
@@ -1050,7 +1199,7 @@ def main_loop():
                     report = build_full_report(infos)
                     bot.send_message(chat_id=CHAT_ID, text=report)
 
-                    # تنبيهات ذكية
+                    # تنبيهات ذكية (RSI + Bollinger + دعم/مقاومة + نماذج شموع)
                     smart_alerts(infos)
 
                     # أفضل الفرص

@@ -1,6 +1,6 @@
-# bot.py
 import os
 import time
+import asyncio
 import requests
 import numpy as np
 import pandas as pd
@@ -23,8 +23,9 @@ if not TOKEN or not CHAT_ID:
 
 bot = Bot(TOKEN)
 
-# ملاحظة: ANALYSIS_INTERVAL لم يعد يُستخدم في loop، لكن نتركه كمرجع
-ANALYSIS_INTERVAL = 60 * 30   # تحليل السوق كل 30 دقيقة (لـ Scheduler في Render)
+# كل 30 دقيقة
+ANALYSIS_INTERVAL = 60 * 30   # تحليل السوق كل 30 دقيقة
+POLL_INTERVAL = 3             # فحص أوامر التليجرام كل 3 ثواني
 
 # ==========================
 # العملات المدعومة (يمكن توسعتها حتى 50+)
@@ -95,6 +96,18 @@ def now_utc():
 
 def now_utc_str():
     return now_utc().strftime("%Y-%m-%d %H:%M UTC")
+
+
+# ==========================
+# دالة موحدة لإرسال الرسائل (لتفادي نسيان await)
+# ==========================
+
+async def tg_send(text: str, chat_id: int | None = None):
+    try:
+        await bot.send_message(chat_id=chat_id or int(CHAT_ID), text=text)
+    except Exception:
+        # لا نرمي الخطأ حتى لا يوقف الحلقة الرئيسية
+        pass
 
 
 # ==========================
@@ -680,18 +693,15 @@ def classify_state(info: dict) -> str:
 # تنبيهات ذكية (بدون صوت نهائياً)
 # ==========================
 
-def send_sound_alert(text: str, sound_type: str | None = None):
+async def send_sound_alert(text: str, sound_type: str | None = None):
     """
     نسخة بدون صوت:
     ترسل تنبيه نصي فقط ولا ترسل أي ملفات صوتية.
     """
-    try:
-        bot.send_message(chat_id=CHAT_ID, text=text)
-    except Exception:
-        pass
+    await tg_send(text)
 
 
-def smart_alerts(all_infos: dict):
+async def smart_alerts(all_infos: dict):
     now_ts = time.time()
 
     for sym, info in all_infos.items():
@@ -728,7 +738,7 @@ def smart_alerts(all_infos: dict):
                     f"المنطقة: {zone}\n"
                     f"نموذج الشموع: {patterns_str}"
                 )
-                send_sound_alert(txt)  # بدون صوت
+                await send_sound_alert(txt)  # بدون صوت
                 LAST_ALERTS[key] = now_ts
 
         # Strong Sell
@@ -751,7 +761,7 @@ def smart_alerts(all_infos: dict):
                     f"المنطقة: {zone}\n"
                     f"نموذج الشموع: {patterns_str}"
                 )
-                send_sound_alert(txt)
+                await send_sound_alert(txt)
                 LAST_ALERTS[key] = now_ts
 
         # Potential Bottom
@@ -766,7 +776,7 @@ def smart_alerts(all_infos: dict):
                     f"المنطقة: {zone}\n"
                     f"نموذج الشموع: {patterns_str}"
                 )
-                send_sound_alert(txt)
+                await send_sound_alert(txt)
                 LAST_ALERTS[key] = now_ts
 
         # Potential Top
@@ -781,7 +791,7 @@ def smart_alerts(all_infos: dict):
                     f"المنطقة: {zone}\n"
                     f"نموذج الشموع: {patterns_str}"
                 )
-                send_sound_alert(txt)
+                await send_sound_alert(txt)
                 LAST_ALERTS[key] = now_ts
 
 
@@ -855,7 +865,7 @@ def build_full_report(all_infos: dict) -> str:
     return header + "\n".join(lines)
 
 
-def analyze_market() -> dict:
+async def analyze_market() -> dict:
     infos = {}
     for symbol, cg_id in COINS.items():
         try:
@@ -863,10 +873,7 @@ def analyze_market() -> dict:
             info = calc_score(df)
             infos[symbol] = info
         except Exception as e:
-            try:
-                bot.send_message(chat_id=CHAT_ID, text=f"❌ خطأ في تحليل {symbol}:\n{e}")
-            except Exception:
-                pass
+            await tg_send(f"❌ خطأ في تحليل {symbol}:\n{e}")
     return infos
 
 
@@ -941,7 +948,7 @@ def register_auto_buy(symbol: str, price: float):
     }
 
 
-def auto_dca(symbol: str, info: dict):
+async def auto_dca(symbol: str, info: dict):
     """شراء تدرّجي DCA عندما يكون السعر في قاع واضح"""
     if symbol not in OPEN_TRADES:
         return
@@ -955,18 +962,15 @@ def auto_dca(symbol: str, info: dict):
     if price < entry and price <= support * 1.02 and rsi6 < 35 and capital["current"] > 10:
         usd_size = max(capital["current"] * 0.1, 10.0)
         register_manual_buy(symbol, price, usd_size)
-        bot.send_message(
-            chat_id=CHAT_ID,
-            text=(
-                f"🟡 DCA على {symbol}\n"
-                f"تعزيز بسعر: {price:.6f}\n"
-                f"حجم نظري: {usd_size:.2f} USDT\n"
-                f"Entry جديد تقريبي: {capital['coins'][symbol]['avg_price']:.6f}"
-            )
+        await tg_send(
+            f"🟡 DCA على {symbol}\n"
+            f"تعزيز بسعر: {price:.6f}\n"
+            f"حجم نظري: {usd_size:.2f} USDT\n"
+            f"Entry جديد تقريبي: {capital['coins'][symbol]['avg_price']:.6f}"
         )
 
 
-def check_plan_targets(all_infos: dict):
+async def check_plan_targets(all_infos: dict):
     to_close = []
     for sym, trade in OPEN_TRADES.items():
         if sym not in all_infos:
@@ -985,17 +989,14 @@ def check_plan_targets(all_infos: dict):
             capital["current"] += profit_usd * 0.5
             capital["saved"] += profit_usd * 0.5
 
-            bot.send_message(
-                chat_id=CHAT_ID,
-                text=(
-                    f"🎯 هدف 12% تحقق على {sym}!\n"
-                    f"Entry: {entry:.6f}\n"
-                    f"Current: {price:.6f}\n"
-                    f"Target: {target:.6f}\n"
-                    f"الربح التقريبي: {profit_pct:.2f}% (~{profit_usd:.2f} USDT)\n"
-                    "📤 تم افتراضياً إضافة 50% للرأس مال و50% للادخار.\n"
-                    "هذه حسابات تعليمية داخلية فقط."
-                )
+            await tg_send(
+                f"🎯 هدف 12% تحقق على {sym}!\n"
+                f"Entry: {entry:.6f}\n"
+                f"Current: {price:.6f}\n"
+                f"Target: {target:.6f}\n"
+                f"الربح التقريبي: {profit_pct:.2f}% (~{profit_usd:.2f} USDT)\n"
+                "📤 تم افتراضياً إضافة 50% للرأس مال و50% للادخار.\n"
+                "هذه حسابات تعليمية داخلية فقط."
             )
             to_close.append(sym)
 
@@ -1007,7 +1008,7 @@ def check_plan_targets(all_infos: dict):
 # Hybrid Auto Mode
 # ==========================
 
-def hybrid_auto_trading(all_infos: dict):
+async def hybrid_auto_trading(all_infos: dict):
     if not HYBRID_AUTO:
         return
     if MAIN_COIN not in all_infos:
@@ -1033,17 +1034,14 @@ def hybrid_auto_trading(all_infos: dict):
         )
         if strong_buy and capital["current"] > 10:
             register_auto_buy(MAIN_COIN, price)
-            bot.send_message(
-                chat_id=CHAT_ID,
-                text=(
-                    f"🟢 Hybrid Auto: دخول افتراضي على {MAIN_COIN}\n"
-                    f"السعر: {price:.6f}\n"
-                    f"الاتجاه: {trend}\n"
-                    f"المنطقة: {zone}\n"
-                    f"نماذج: {', '.join(patterns) if patterns else 'بدون'}\n"
-                    f"هدف 12%: {price * 1.12:.6f}\n"
-                    "هذه إشارة تعليمية فقط وليست تنفيذ فعلي على منصة التداول."
-                )
+            await tg_send(
+                f"🟢 Hybrid Auto: دخول افتراضي على {MAIN_COIN}\n"
+                f"السعر: {price:.6f}\n"
+                f"الاتجاه: {trend}\n"
+                f"المنطقة: {zone}\n"
+                f"نماذج: {', '.join(patterns) if patterns else 'بدون'}\n"
+                f"هدف 12%: {price * 1.12:.6f}\n"
+                "هذه إشارة تعليمية فقط وليست تنفيذ فعلي على منصة التداول."
             )
     else:
         # يوجد صفقة → خروج ذكي
@@ -1059,39 +1057,38 @@ def hybrid_auto_trading(all_infos: dict):
             ("Evening Star" in patterns or "Bearish Engulfing" in patterns or zone == "supply")
         )
         if strong_sell:
-            bot.send_message(
-                chat_id=CHAT_ID,
-                text=(
-                    f"🔴 Hybrid Auto: توصية خروج على {MAIN_COIN}\n"
-                    f"Entry: {entry:.6f}\n"
-                    f"Current: {price:.6f}\n"
-                    f"ربح تقريبي: {profit_pct:.2f}% على كمية تقريبية {amount:.2f}\n"
-                    "يُفضل جني الربح الآن وفق نظام 12% الأسبوعي."
-                )
+            await tg_send(
+                f"🔴 Hybrid Auto: توصية خروج على {MAIN_COIN}\n"
+                f"Entry: {entry:.6f}\n"
+                f"Current: {price:.6f}\n"
+                f"ربح تقريبي: {profit_pct:.2f}% على كمية تقريبية {amount:.2f}\n"
+                "يُفضل جني الربح الآن وفق نظام 12% الأسبوعي."
             )
 
 
 # ==========================
-# المرحلة 3: أوامر التليجرام
+# المرحلة 3: أوامر التليجرام + الحلقة الرئيسية
 # ==========================
 
-def send_help(chat_id: int):
-    bot.send_message(
-        chat_id=chat_id,
-        text=(
-            "🤖 أوامر البوت الذكي:\n"
-            "/xvg - تحليل مفصل لعملة XVG\n"
-            "/coin رمز - تحليل عملة معينة مثلاً /coin ROSE\n"
-            "/plan - شرح خطة 12% الأسبوعية\n"
-            "/buy السعر [الرمز] [حجم_USDT] - تسجيل شراء يدوي\n"
-            "   مثال: /buy 0.0065 XVG 100\n"
-            "/sell السعر [الرمز] [كمية] - حساب ربح صفقة\n"
-            "/dashboard - لوحة تحكم شاملة\n"
-        )
+# ==========================
+# أوامر التليجرام
+# ==========================
+
+async def send_help(chat_id: int):
+    await tg_send(
+        "🤖 أوامر البوت الذكي:\n"
+        "/xvg - تحليل مفصل لعملة XVG\n"
+        "/coin رمز - تحليل عملة معينة مثلاً /coin ROSE\n"
+        "/plan - شرح خطة 12% الأسبوعية\n"
+        "/buy السعر [الرمز] [حجم_USDT] - تسجيل شراء يدوي\n"
+        "   مثال: /buy 0.0065 XVG 100\n"
+        "/sell السعر [الرمز] [كمية] - حساب ربح صفقة\n"
+        "/dashboard - لوحة تحكم شاملة\n",
+        chat_id=chat_id
     )
 
 
-def cmd_xvg(chat_id: int):
+async def cmd_xvg(chat_id: int):
     global LAST_INFOS
     try:
         if MAIN_COIN not in LAST_INFOS:
@@ -1136,51 +1133,52 @@ def cmd_xvg(chat_id: int):
                 f"Stop Loss ذكي مقترح: {sl:.6f}\n"
             )
 
-        bot.send_message(chat_id=chat_id, text=msg)
+        await tg_send(msg, chat_id=chat_id)
 
     except Exception as e:
-        bot.send_message(chat_id=chat_id, text=f"❌ خطأ في تحليل {MAIN_COIN}:\n{e}")
+        await tg_send(f"❌ خطأ في تحليل {MAIN_COIN}:\n{e}", chat_id=chat_id)
 
 
-def cmd_coin(chat_id: int, symbol: str):
+async def cmd_coin(chat_id: int, symbol: str):
     symbol = symbol.upper()
     if symbol not in COINS:
-        bot.send_message(chat_id=chat_id, text=f"❌ العملة {symbol} غير مضافة للبوت.")
+        await tg_send(f"❌ العملة {symbol} غير مضافة للبوت.", chat_id=chat_id)
         return
     try:
         df = fetch_ohlcv_coingecko(COINS[symbol], days=2, interval="hourly")
         info = calc_score(df)
         LAST_INFOS[symbol] = info
         msg = build_coin_report(symbol, info, is_main=(symbol == MAIN_COIN))
-        bot.send_message(chat_id=chat_id, text=msg)
+        await tg_send(msg, chat_id=chat_id)
     except Exception as e:
-        bot.send_message(chat_id=chat_id, text=f"❌ خطأ في تحليل {symbol}:\n{e}")
+        await tg_send(f"❌ خطأ في تحليل {symbol}:\n{e}", chat_id=chat_id)
 
 
-def cmd_plan(chat_id: int):
-    bot.send_message(
-        chat_id=chat_id,
-        text=(
-            "📘 خطة 12% الأسبوعية (XVG):\n\n"
-            "• الهدف: ربح 12% لكل دورة أسبوعية تقريبًا.\n"
-            "• البوت يحسب هدف 12% لكل Entry.\n"
-            "• عند وصول السعر للهدف → تنبيه 🎯.\n"
-            "• تسجيل شراء يدوي:\n"
-            "  /buy 0.0065 XVG 100\n"
-            "  (سعر – رمز – حجم بالدولار)\n"
-        )
+async def cmd_plan(chat_id: int):
+    await tg_send(
+        "📘 خطة 12% الأسبوعية (XVG):\n\n"
+        "• الهدف: ربح 12% لكل دورة أسبوعية تقريبًا.\n"
+        "• البوت يحسب هدف 12% لكل Entry.\n"
+        "• عند وصول السعر للهدف → تنبيه 🎯.\n"
+        "• تسجيل شراء يدوي:\n"
+        "  /buy 0.0065 XVG 100\n"
+        "  (سعر – رمز – حجم بالدولار)\n",
+        chat_id=chat_id
     )
 
 
-def cmd_buy(chat_id: int, args: list):
+async def cmd_buy(chat_id: int, args: list):
     if not args:
-        bot.send_message(chat_id=chat_id, text="❌ استخدم: /buy السعر [الرمز] [حجم_USDT]\nمثال: /buy 0.0065 XVG 100")
+        await tg_send(
+            "❌ استخدم: /buy السعر [الرمز] [حجم_USDT]\nمثال: /buy 0.0065 XVG 100",
+            chat_id=chat_id
+        )
         return
 
     try:
         price = float(args[0])
     except Exception:
-        bot.send_message(chat_id=chat_id, text="❌ السعر غير صحيح. مثال: /buy 0.0065 XVG 100")
+        await tg_send("❌ السعر غير صحيح. مثال: /buy 0.0065 XVG 100", chat_id=chat_id)
         return
 
     symbol = MAIN_COIN
@@ -1201,35 +1199,36 @@ def cmd_buy(chat_id: int, args: list):
                 pass
 
     if symbol not in COINS:
-        bot.send_message(chat_id=chat_id, text=f"❌ العملة {symbol} غير مدعومة.")
+        await tg_send(f"❌ العملة {symbol} غير مدعومة.", chat_id=chat_id)
         return
 
     if capital["current"] <= 0:
-        bot.send_message(chat_id=chat_id, text="⚠️ لا يوجد رأس مال متاح نظريًا لصفقات جديدة.")
+        await tg_send("⚠️ لا يوجد رأس مال متاح نظريًا لصفقات جديدة.", chat_id=chat_id)
         return
 
     register_manual_buy(symbol, price, usd_size)
     trade = OPEN_TRADES[symbol]
-    bot.send_message(
-        chat_id=chat_id,
-        text=(
-            f"📥 تم تسجيل صفقة شراء على {symbol}\n"
-            f"Entry (متوسط): {trade['entry']:.6f}\n"
-            f"Target 12%: {trade['target_12']:.6f}\n"
-            f"رأس المال المتبقي (نظريًا): {capital['current']:.2f} USDT"
-        )
+    await tg_send(
+        f"📥 تم تسجيل صفقة شراء على {symbol}\n"
+        f"Entry (متوسط): {trade['entry']:.6f}\n"
+        f"Target 12%: {trade['target_12']:.6f}\n"
+        f"رأس المال المتبقي (نظريًا): {capital['current']:.2f} USDT",
+        chat_id=chat_id
     )
 
 
-def cmd_sell(chat_id: int, args: list):
+async def cmd_sell(chat_id: int, args: list):
     if not args:
-        bot.send_message(chat_id=chat_id, text="❌ استخدم: /sell السعر [الرمز] [كمية]\nمثال: /sell 0.0072 XVG 5000")
+        await tg_send(
+            "❌ استخدم: /sell السعر [الرمز] [كمية]\nمثال: /sell 0.0072 XVG 5000",
+            chat_id=chat_id
+        )
         return
 
     try:
         price = float(args[0])
     except Exception:
-        bot.send_message(chat_id=chat_id, text="❌ السعر غير صحيح.")
+        await tg_send("❌ السعر غير صحيح.", chat_id=chat_id)
         return
 
     symbol = MAIN_COIN
@@ -1256,23 +1255,21 @@ def cmd_sell(chat_id: int, args: list):
         amount = c["amount"]
 
     if amount <= 0:
-        bot.send_message(chat_id=chat_id, text=f"ℹ️ لا تملك كمية مسجلة لـ {symbol} في المحرك الداخلي.")
+        await tg_send(f"ℹ️ لا تملك كمية مسجلة لـ {symbol} في المحرك الداخلي.", chat_id=chat_id)
         return
 
     entry = c["avg_price"]
     profit_pct = (price / entry - 1) * 100
     profit_usd = (price - entry) * amount
 
-    bot.send_message(
-        chat_id=chat_id,
-        text=(
-            f"📤 صفقة {symbol} (حساب نظري):\n"
-            f"Entry: {entry:.6f}\n"
-            f"Exit: {price:.6f}\n"
-            f"Quantity: {amount:.2f}\n"
-            f"الربح التقريبي: {profit_pct:.2f}% (~{profit_usd:.2f} USDT)\n"
-            "هذا الحساب داخلي فقط ولا يعني تنفيذ حقيقي على المنصة."
-        )
+    await tg_send(
+        f"📤 صفقة {symbol} (حساب نظري):\n"
+        f"Entry: {entry:.6f}\n"
+        f"Exit: {price:.6f}\n"
+        f"Quantity: {amount:.2f}\n"
+        f"الربح التقريبي: {profit_pct:.2f}% (~{profit_usd:.2f} USDT)\n"
+        "هذا الحساب داخلي فقط ولا يعني تنفيذ حقيقي على المنصة.",
+        chat_id=chat_id
     )
 
     c["amount"] -= amount
@@ -1281,7 +1278,7 @@ def cmd_sell(chat_id: int, args: list):
     capital["realized_profit"] += profit_usd
 
 
-def cmd_dashboard(chat_id: int):
+async def cmd_dashboard(chat_id: int):
     lines = []
     lines.append(f"📊 Dashboard – البوت الذكي\n⏰ {now_utc_str()}\n")
     lines.append(f"• العملات المراقبة: {len(COINS)}")
@@ -1311,50 +1308,106 @@ def cmd_dashboard(chat_id: int):
                 f"- {sym}: Entry {tr['entry']:.6f} | Target 12% {tr['target_12']:.6f} | Amount ~{tr.get('amount',0):.2f}"
             )
 
-    bot.send_message(chat_id=chat_id, text="\n".join(lines))
+    await tg_send("\n".join(lines), chat_id=chat_id)
 
 
 # ==========================
-# مهمة التحليل المجدولة (بدل الحلقة اللانهائية)
+# قراءة أوامر التليجرام (Polling)
 # ==========================
 
-def run_scheduled_analysis():
-    """
-    هذه الدالة تُستخدم مع Render Scheduler:
-    تستدعي تحليل السوق مرة واحدة ثم تنهي البرنامج.
-    """
-    global LAST_INFOS
+async def process_updates(last_update_id=None):
     try:
-        infos = analyze_market()
-        if infos:
-            LAST_INFOS = infos
+        updates = await bot.get_updates(offset=last_update_id, timeout=5)
+    except Exception:
+        return last_update_id
 
-            report = build_full_report(infos)
-            bot.send_message(chat_id=CHAT_ID, text=report)
+    for u in updates:
+        last_update_id = u.update_id + 1
+        if not hasattr(u, "message") or u.message is None:
+            continue
+        chat_id = u.message.chat.id
+        text = (u.message.text or "").strip()
 
-            # تنبيهات ذكية
-            smart_alerts(infos)
+        if not text or not text.startswith("/"):
+            continue
 
-            # أفضل الفرص
-            mine_opportunities(infos)
+        parts = text.split()
+        cmd = parts[0].lower()
+        args = parts[1:]
 
-            # Hybrid Auto
-            hybrid_auto_trading(infos)
+        if cmd in ["/start", "/help"]:
+            await send_help(chat_id)
+        elif cmd == "/xvg":
+            await cmd_xvg(chat_id)
+        elif cmd == "/coin" and args:
+            await cmd_coin(chat_id, args[0])
+        elif cmd == "/plan":
+            await cmd_plan(chat_id)
+        elif cmd == "/buy":
+            await cmd_buy(chat_id, args)
+        elif cmd == "/sell":
+            await cmd_sell(chat_id, args)
+        elif cmd == "/dashboard":
+            await cmd_dashboard(chat_id)
+        else:
+            await send_help(chat_id)
 
-            # DCA على XVG
-            if MAIN_COIN in infos:
-                auto_dca(MAIN_COIN, infos[MAIN_COIN])
+    return last_update_id
 
-            # فحص أهداف 12%
-            check_plan_targets(infos)
 
-    except Exception as e:
-        try:
-            bot.send_message(chat_id=CHAT_ID, text=f"❌ خطأ عام في مهمة التحليل:\n{e}")
-        except Exception:
-            pass
+# ==========================
+# الحلقة الرئيسية
+# ==========================
+
+async def main_loop():
+    global LAST_INFOS
+
+    await tg_send(
+        "✅ البوت الذكي تم تشغيله (Hybrid + 12% + Capital + Smart Alerts + Candlestick AI Pro + "
+        "Balanced Score v2 – بدون صوت – تحليل كل 30 دقيقة)."
+    )
+
+    last_analysis_time = 0
+    last_update_id = None
+
+    while True:
+        # 1) أوامر التليجرام
+        last_update_id = await process_updates(last_update_id)
+
+        # 2) تحليل السوق
+        now_ts = time.time()
+        if now_ts - last_analysis_time > ANALYSIS_INTERVAL:
+            try:
+                infos = await analyze_market()
+                if infos:
+                    LAST_INFOS = infos
+
+                    report = build_full_report(infos)
+                    await tg_send(report)
+
+                    # تنبيهات ذكية
+                    await smart_alerts(infos)
+
+                    # أفضل الفرص
+                    mine_opportunities(infos)
+
+                    # Hybrid Auto
+                    await hybrid_auto_trading(infos)
+
+                    # DCA على XVG
+                    if MAIN_COIN in infos:
+                        await auto_dca(MAIN_COIN, infos[MAIN_COIN])
+
+                    # فحص أهداف 12%
+                    await check_plan_targets(infos)
+
+            except Exception as e:
+                await tg_send(f"❌ خطأ عام في الحلقة الرئيسية:\n{e}")
+
+            last_analysis_time = now_ts
+
+        await asyncio.sleep(POLL_INTERVAL)
 
 
 if __name__ == "__main__":
-    # تُشغَّل عند استخدام Scheduler في Render:
-    run_scheduled_analysis()
+    asyncio.run(main_loop())

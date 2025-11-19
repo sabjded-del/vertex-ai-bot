@@ -572,3 +572,66 @@ def main_loop():
 
 if __name__ == "__main__":
     main_loop()
+# =====================  التنبيهات الذكية  ========================
+
+def smart_alerts(all_infos):
+    alerts = []
+
+    for sym, info in all_infos.items():
+        price = info["last_close"]
+        rsi6 = info["rsi6"]
+        score = info["score"]
+        support = info["support"]
+        resistance = info["resistance"]
+        bb_low = info["bb_low"]
+        bb_up = info["bb_up"]
+        k = info["rsi6"]
+        trend = info["trend_ar"]
+
+        # -------- Strong Buy --------
+        strong_buy = (
+            rsi6 < 30 and
+            price <= support * 1.03 and
+            score >= 70 and
+            bb_low is not None and price <= bb_low
+        )
+
+        if strong_buy:
+            alerts.append(f"🟢💎 **تنبيه شراء قوي** على {sym}\n"
+                          f"السعر: {price:.6f}\n"
+                          f"RSI6: {rsi6:.1f}\n"
+                          f"الدعم: {support:.6f}\n"
+                          f"Score: {score}\n"
+                          f"الاتجاه: {trend}")
+
+        # -------- Strong Sell --------
+        strong_sell = (
+            rsi6 > 70 and
+            resistance > 0 and price >= resistance * 0.97 and
+            bb_up is not None and price >= bb_up and
+            score <= 35
+        )
+
+        if strong_sell:
+            alerts.append(f"🔴🚨 **تنبيه بيع قوي** على {sym}\n"
+                          f"السعر: {price:.6f}\n"
+                          f"RSI6: {rsi6:.1f}\n"
+                          f"المقاومة: {resistance:.6f}\n"
+                          f"Score: {score}\n"
+                          f"الاتجاه: {trend}")
+
+        # -------- Potential Bottom --------
+        if rsi6 < 35 and price <= support * 1.05:
+            alerts.append(f"🟡📉 **قاع محتمل** على {sym}\n"
+                          f"السعر: {price:.6f}\n"
+                          f"RSI6: {rsi6:.1f}\n"
+                          f"الدعم: {support:.6f}")
+
+        # -------- Potential Top --------
+        if rsi6 > 65 and price >= resistance * 0.95:
+            alerts.append(f"🟠📈 **قمة محتملة** على {sym}\n"
+                          f"السعر: {price:.6f}\n"
+                          f"RSI6: {rsi6:.1f}\n"
+                          f"المقاومة: {resistance:.6f}")
+
+    return alerts

@@ -17,25 +17,43 @@ COINS = {
     "kaia": "kaia"
 }
 
+# ==========================
+# جلب السعر من Coingecko
+# ==========================
 def get_price(coin_id):
     url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd"
-    r = requests.get(url).json()
+    
+    try:
+        r = requests.get(url, timeout=10).json()
 
-    # حماية من الأخطاء والـ rate-limit
-    if coin_id not in r:
+        # التحقق من وجود العملة حتى لا يحدث KeyError
+        if coin_id not in r:
+            return "N/A"
+
+        return r[coin_id]["usd"]
+
+    except Exception:
         return "N/A"
 
-    return r[coin_id]["usd"]
-
+# ==========================
+# إرسال الأسعار
+# ==========================
 def send_prices():
-    msg = "📊 **أسعار العملات الآن:**\n\n"
+    msg = "🔥 **تحديث الأسعار المباشر** 🔥\n\n"
+
     for symbol, coin_id in COINS.items():
         price = get_price(coin_id)
-        msg += f"• {symbol.upper()}: {price}$\n"
+        msg += f"• **{symbol.upper()}**: {price} USD\n"
+
     bot.send_message(CHAT_ID, msg, parse_mode="Markdown")
 
+
+# ==========================
+# بداية تشغيل البوت
+# ==========================
 bot.send_message(CHAT_ID, "🚀 تم تشغيل البوت بنجاح!")
 
+# إرسال الأسعار كل 15 دقيقة
 while True:
     send_prices()
-    time.sleep(900)  # كل 15 دقيقة
+    time.sleep(900)  # 900 ثانية = 15 دقيقة

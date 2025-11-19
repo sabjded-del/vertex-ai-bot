@@ -1,3 +1,4 @@
+# bot.py
 import os
 import time
 import requests
@@ -22,9 +23,8 @@ if not TOKEN or not CHAT_ID:
 
 bot = Bot(TOKEN)
 
-# كل 30 دقيقة
-ANALYSIS_INTERVAL = 60 * 30   # تحليل السوق كل 30 دقيقة
-POLL_INTERVAL = 3             # فحص أوامر التليجرام كل 3 ثواني
+# ملاحظة: ANALYSIS_INTERVAL لم يعد يُستخدم في loop، لكن نتركه كمرجع
+ANALYSIS_INTERVAL = 60 * 30   # تحليل السوق كل 30 دقيقة (لـ Scheduler في Render)
 
 # ==========================
 # العملات المدعومة (يمكن توسعتها حتى 50+)
@@ -863,7 +863,10 @@ def analyze_market() -> dict:
             info = calc_score(df)
             infos[symbol] = info
         except Exception as e:
-            bot.send_message(chat_id=CHAT_ID, text=f"❌ خطأ في تحليل {symbol}:\n{e}")
+            try:
+                bot.send_message(chat_id=CHAT_ID, text=f"❌ خطأ في تحليل {symbol}:\n{e}")
+            except Exception:
+                pass
     return infos
 
 
@@ -1069,11 +1072,7 @@ def hybrid_auto_trading(all_infos: dict):
 
 
 # ==========================
-# المرحلة 3: أوامر التليجرام + الحلقة الرئيسية
-# ==========================
-
-# ==========================
-# أوامر التليجرام
+# المرحلة 3: أوامر التليجرام
 # ==========================
 
 def send_help(chat_id: int):
@@ -1316,105 +1315,46 @@ def cmd_dashboard(chat_id: int):
 
 
 # ==========================
-# قراءة أوامر التليجرام (Polling)
+# مهمة التحليل المجدولة (بدل الحلقة اللانهائية)
 # ==========================
 
-def process_updates(last_update_id=None):
-    try:
-        updates = bot.get_updates(offset=last_update_id, timeout=5)
-    except Exception:
-        return last_update_id
-
-    for u in updates:
-        last_update_id = u.update_id + 1
-        if not hasattr(u, "message") or u.message is None:
-            continue
-        chat_id = u.message.chat.id
-        text = (u.message.text or "").strip()
-
-        if not text or not text.startswith("/"):
-            continue
-
-        parts = text.split()
-        cmd = parts[0].lower()
-        args = parts[1:]
-
-        if cmd in ["/start", "/help"]:
-            send_help(chat_id)
-        elif cmd == "/xvg":
-            cmd_xvg(chat_id)
-        elif cmd == "/coin" and args:
-            cmd_coin(chat_id, args[0])
-        elif cmd == "/plan":
-            cmd_plan(chat_id)
-        elif cmd == "/buy":
-            cmd_buy(chat_id, args)
-        elif cmd == "/sell":
-            cmd_sell(chat_id, args)
-        elif cmd == "/dashboard":
-            cmd_dashboard(chat_id)
-        else:
-            send_help(chat_id)
-
-    return last_update_id
-
-
-# ==========================
-# الحلقة الرئيسية
-# ==========================
-
-def main_loop():
+def run_scheduled_analysis():
+    """
+    هذه الدالة تُستخدم مع Render Scheduler:
+    تستدعي تحليل السوق مرة واحدة ثم تنهي البرنامج.
+    """
     global LAST_INFOS
+    try:
+        infos = analyze_market()
+        if infos:
+            LAST_INFOS = infos
 
-    bot.send_message(
-        chat_id=CHAT_ID,
-        text="✅ البوت الذكي تم تشغيله (Hybrid + 12% + Capital + Smart Alerts + Candlestick AI Pro + Balanced Score v2 – بدون صوت – تحليل كل 30 دقيقة)."
-    )
+            report = build_full_report(infos)
+            bot.send_message(chat_id=CHAT_ID, text=report)
 
-    last_analysis_time = 0
-    last_update_id = None
+            # تنبيهات ذكية
+            smart_alerts(infos)
 
-    while True:
-        # 1) أوامر التليجرام
-        last_update_id = process_updates(last_update_id)
+            # أفضل الفرص
+            mine_opportunities(infos)
 
-        # 2) تحليل السوق
-        now_ts = time.time()
-        if now_ts - last_analysis_time > ANALYSIS_INTERVAL:
-            try:
-                infos = analyze_market()
-                if infos:
-                    LAST_INFOS = infos
+            # Hybrid Auto
+            hybrid_auto_trading(infos)
 
-                    report = build_full_report(infos)
-                    bot.send_message(chat_id=CHAT_ID, text=report)
+            # DCA على XVG
+            if MAIN_COIN in infos:
+                auto_dca(MAIN_COIN, infos[MAIN_COIN])
 
-                    # تنبيهات ذكية
-                    smart_alerts(infos)
+            # فحص أهداف 12%
+            check_plan_targets(infos)
 
-                    # أفضل الفرص
-                    mine_opportunities(infos)
-
-                    # Hybrid Auto
-                    hybrid_auto_trading(infos)
-
-                    # DCA على XVG
-                    if MAIN_COIN in infos:
-                        auto_dca(MAIN_COIN, infos[MAIN_COIN])
-
-                    # فحص أهداف 12%
-                    check_plan_targets(infos)
-
-            except Exception as e:
-                try:
-                    bot.send_message(chat_id=CHAT_ID, text=f"❌ خطأ عام في الحلقة الرئيسية:\n{e}")
-                except Exception:
-                    pass
-
-            last_analysis_time = now_ts
-
-        time.sleep(POLL_INTERVAL)
+    except Exception as e:
+        try:
+            bot.send_message(chat_id=CHAT_ID, text=f"❌ خطأ عام في مهمة التحليل:\n{e}")
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
-    main_loop()
+    # تُشغَّل عند استخدام Scheduler في Render:
+    run_scheduled_analysis()

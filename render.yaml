@@ -3,7 +3,7 @@ services:
     name: vertex-bot
     runtime: python3.10
     buildCommand: pip install -r requirements.txt
-    startCommand: bash start.sh
+    startCommand: python bot.py
     envVars:
       - key: TOKEN
         sync: false

@@ -2,7 +2,7 @@ services:
   - type: worker
     name: vertex-bot
     env: python
-    pythonVersion: 3.10
+    pythonVersion: 3.13
     buildCommand: pip install -r requirements.txt
     startCommand: python bot.py
     envVars:

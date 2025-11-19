@@ -1413,23 +1413,30 @@ def process_updates(last_update_id=None):
         parts = text.split()
         cmd = parts[0].lower()
         args = parts[1:]
-
+        
         if cmd in ["/start", "/help"]:
-            asyncio.create_task(send_help(chat_id))
+            send_help(chat_id)
+
         elif cmd == "/xvg":
-            asyncio.create_task(cmd_xvg(chat_id))
+            cmd_xvg(chat_id)
+
         elif cmd == "/coin" and args:
-            asyncio.create_task(cmd_coin(chat_id, args[0]))
+            cmd_coin(chat_id, args[0])
+
         elif cmd == "/plan":
-            asyncio.create_task(cmd_plan(chat_id))
+            cmd_plan(chat_id)
+
         elif cmd == "/buy":
-            asyncio.create_task(cmd_buy(chat_id, args))
+            cmd_buy(chat_id, args)
+
         elif cmd == "/sell":
-            asyncio.create_task(cmd_sell(chat_id, args))
+            cmd_sell(chat_id, args)
+
         elif cmd == "/dashboard":
-            asyncio.create_task(cmd_dashboard(chat_id))
+            cmd_dashboard(chat_id)
+
         else:
-            asyncio.create_task(send_help(chat_id))
+            send_help(chat_id)
 
     return last_update_id
 

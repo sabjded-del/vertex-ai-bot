@@ -1,2 +1,4 @@
-pyTelegramBotAPI==4.14.1
+numpy
+pandas
 requests
+python-telegram-bot==13.14

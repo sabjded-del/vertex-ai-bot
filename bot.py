@@ -1,59 +1,53 @@
 import os
-import time
 import requests
-import pandas as pd
-import numpy as np
 from telegram import Bot
-from datetime import datetime
+import time
 
-# ========= إعداد التوكن والـ Chat ID من متغيرات البيئة =========
+# ====== بيانات التليجرام ======
 TOKEN = os.getenv("TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
+bot = Bot(token=TOKEN)
 
-if not TOKEN or not CHAT_ID:
-    raise RuntimeError("الرجاء ضبط متغيرات البيئة TOKEN و CHAT_ID في Render")
-
-bot = Bot(TOKEN)
-
-# ========= قائمة العملات =========
-# المفتاح = رمز العملة اللي تحبه
-# القيمة = اسم العملة في موقع CoinGecko (coin id)
+# ====== قائمة العملات ======
+# تقدر تضيف أو تشيل براحتك
 COINS = {
-    "XVG": "verge",
-    # أمثلة لعملاتك، عدّل و/or زِد براحتك:
-    # "ROSE": "oasis-network",
-    # "GALA": "gala",
-    # "BLUR": "blur",
-    # "KAIA": "kaia",
-    # "FIL": "filecoin",
+    "xvg": "verge",
+    "rose": "oasis-network",
+    "gala": "gala",
+    "blur": "blur",
+    "fil": "filecoin",
+    "kaia": "kaia"
 }
 
+# ====== دالة لجلب السعر من CoinGecko ======
+def get_price(coin_id):
+    url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd"
+    try:
+        r = requests.get(url, timeout=10)
+        data = r.json()
+        return data[coin_id]["usd"]
+    except:
+        return None
 
-# ========= جلب بيانات من CoinGecko =========
-def fetch_ohlc(coin_id: str) -> pd.DataFrame:
-    """
-    نجلب بيانات السعر لعملة معينة من CoinGecko
-    coin_id هو الاسم الخاص بالعملة في CoinGecko مثل verge, oasis-network
-    """
-    url = "https://api.coingecko.com/api/v3/coins/" + coin_id + "/market_chart"
-    params = {
-        "vs_currency": "usd",   # تقريبًا تعادل USDT
-        "days": 1,              # آخر 24 ساعة
-        "interval": "hourly",   # شموع كل ساعة
-    }
+# ====== رسالة التنبيه ======
+def alert_message():
+    text = "📊 **تحديث أسعار العملات الآن:**\n\n"
+    for symbol, coin_id in COINS.items():
+        price = get_price(coin_id)
+        if price:
+            text += f"💠 `{symbol.upper()}`: ${price}\n"
+        else:
+            text += f"❌ `{symbol.upper()}`: تعذّر جلب السعر\n"
+    return text
 
-    r = requests.get(url, params=params, timeout=15)
-    r.raise_for_status()
-    data = r.json()
+# ====== التشغيل المستمر ======
+def start_bot():
+    bot.send_message(chat_id=CHAT_ID, text="🚀 تم تشغيل البوت بنجاح!")
 
-    prices = data.get("prices", [])
-    if not prices:
-        raise ValueError(f"لا توجد بيانات أسعار من CoinGecko للعملة {coin_id}")
+    while True:
+        msg = alert_message()
+        bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
+        time.sleep(300)  # كل 5 دقائق
 
-    df = pd.DataFrame(prices, columns=["time", "close"])
-    df["time"] = pd.to_datetime(df["time"], unit="ms")
-    return df
-
-
-# ========= حساب المؤشرات الفنية =========
-def add_indicators(df
+if __name__ == "__main__":
+    start_bot()

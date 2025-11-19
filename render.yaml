@@ -1,7 +1,11 @@
 services:
   - type: worker
-    name: vertex-ai-bot
+    name: vertex-bot
     env: python
-    runtime: python3.10
-    buildCommand: "pip install -r requirements.txt"
-    startCommand: "bash start.sh"
+    buildCommand: pip install -r requirements.txt
+    startCommand: bash start.sh
+    envVars:
+      - key: TOKEN
+        sync: false
+      - key: CHAT_ID
+        sync: false

@@ -11,12 +11,35 @@ bot = telebot.TeleBot(TOKEN)
 
 # ===== قائمة العملات =====
 COINS = {
-    "xvg":  {"binance": "XVGUSDT",   "coingecko": "verge"},
-    "rose": {"binance": "ROSEUSDT",  "coingecko": "oasis-network"},
-    "gala": {"binance": "GALAUSDT",  "coingecko": "gala"},
-    "blur": {"binance": "BLURUSDT",  "coingecko": "blur"},
-    "fil":  {"binance": "FILUSDT",   "coingecko": "filecoin"},
-    "kaia": {"binance": None,        "coingecko": "kaia"}
+    "xvg": {
+        "binance": "XVGUSDT",
+        "coingecko": "verge"
+    },
+
+    "rose": {
+        "binance": "ROSEUSDT",
+        "coingecko": "oasis-network"
+    },
+
+    "gala": {
+        "binance": "GALAUSDT",
+        "coingecko": "gala"
+    },
+
+    "blur": {
+        "binance": "BLURUSDT",
+        "coingecko": "blur"
+    },
+
+    "fil": {
+        "binance": "FILUSDT",
+        "coingecko": "filecoin"
+    },
+
+    "kaia": {
+        "binance": None,
+        "coingecko": "kaia"
+    }
 }
 
 # ===== Binance API =====
